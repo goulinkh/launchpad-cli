@@ -57,6 +57,15 @@ pub enum Operation {
 }
 
 impl Operation {
+    pub fn check_supported(self) -> Result<()> {
+        if self == Self::ReplaceMergeProposalPrerequisite {
+            return Err(Error::UnsupportedOperation {
+                reason: "Launchpad does not expose prerequisite resubmission through its API; use the web resubmit flow. No requests were sent".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn requires_authentication(self) -> bool {
         matches!(
             self,
@@ -142,6 +151,14 @@ pub enum DiscussionFormat {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, JsonSchema, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileTransport {
+    #[default]
+    Https,
+    Ssh,
+}
+
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -151,6 +168,7 @@ pub struct Request {
     pub target_repository: Option<String>,
     pub path: Option<String>,
     pub branch: Option<String>,
+    pub transport: Option<FileTransport>,
     pub query: Option<String>,
     pub status: Option<OneOrMany>,
     pub importance: Option<OneOrMany>,
@@ -421,8 +439,10 @@ impl Request {
         {
             self.string(&self.commit_message, "commit_message")?;
         }
-        if self.op == Operation::SetMergeProposalStatus {
-            self.status()?;
+        if self.op == Operation::SetMergeProposalStatus
+            && self.status()?.eq_ignore_ascii_case("Superseded")
+        {
+            Operation::ReplaceMergeProposalPrerequisite.check_supported()?;
         }
         if self.vote.is_some() {
             self.vote()?;
@@ -445,6 +465,16 @@ impl Request {
         }
         if self.op == Operation::FileRead {
             validate_repository_path(self.path("path")?)?;
+            normalise_repository(self.repository()?)?;
+            if self.branch.as_deref().is_some_and(|branch| {
+                branch.trim().is_empty() || branch.starts_with('-') || branch.contains('\0')
+            }) {
+                return Err(Error::invalid(
+                    "branch must be a nonempty Git ref, not an option",
+                ));
+            }
+        } else if self.transport.is_some() {
+            return Err(Error::invalid("transport is supported only for file_read"));
         }
         let has_discussion_filters = self.current_diff_only.is_some()
             || self.unresolved_only.is_some()
@@ -682,7 +712,15 @@ pub fn normalise_repository(raw: &str) -> Result<String> {
         path.to_owned()
     } else if let Some(path) = raw.strip_prefix("lp:") {
         path.trim_start_matches('/').to_owned()
-    } else if let Some(path) = raw.strip_prefix("git@git.launchpad.net:") {
+    } else if let Some((_, path)) = raw.split_once(':').filter(|(host, _)| {
+        matches!(
+            *host,
+            "git@git.launchpad.net"
+                | "git@git.staging.launchpad.net"
+                | "git@git.qastaging.launchpad.net"
+                | "git@git.launchpad.test"
+        )
+    }) {
         path.to_owned()
     } else if raw.contains("://") {
         repository_path_from_url(raw)?
@@ -722,6 +760,9 @@ fn repository_path_from_url(raw: &str) -> Result<String> {
             | "code.qastaging.launchpad.net"
             | "git.qastaging.launchpad.net"
             | "api.qastaging.launchpad.net"
+            | "code.launchpad.test"
+            | "git.launchpad.test"
+            | "api.launchpad.test"
     ) {
         return Err(Error::invalid(format!(
             "repository URL host {host:?} is not a Launchpad host; use a Launchpad clone URL, web URL, lp:// identifier, or repository path"
@@ -812,6 +853,9 @@ impl ResourceTarget {
 }
 
 pub fn validate_repository_path(path: &str) -> Result<()> {
+    if path.contains('\0') {
+        return Err(Error::invalid("path cannot contain NUL bytes"));
+    }
     let path = Path::new(path);
     if path.is_absolute()
         || path
@@ -846,6 +890,10 @@ fn split_target(raw: &str) -> Result<(String, Vec<(String, String)>)> {
                     | "api.launchpad.net"
                     | "api.staging.launchpad.net"
                     | "api.qastaging.launchpad.net"
+                    | "launchpad.test"
+                    | "bugs.launchpad.test"
+                    | "code.launchpad.test"
+                    | "api.launchpad.test"
             )
         ) {
             return Err(Error::invalid("target URL is not a Launchpad URL"));
@@ -935,7 +983,10 @@ fn classify_resource(path: &str) -> Result<ResourceKind> {
             id: parse_positive_id(path, "merge proposal ID")?,
         });
     }
-    if path.contains("/+git/") {
+    if path
+        .split_once("/+git/")
+        .is_some_and(|(_, name)| !name.trim_end_matches('/').contains('/'))
+    {
         return Ok(ResourceKind::Repository);
     }
     Ok(ResourceKind::Generic)
@@ -947,6 +998,42 @@ mod tests {
         DiscussionComments, DiscussionFormat, Request, ResourceKind, ResourceTarget,
         normalise_repository, validate_repository_path,
     };
+
+    #[test]
+    fn accepts_development_resource_and_repository_urls() {
+        let repository = "~owner/project/+git/repo";
+        for url in [
+            format!("https://code.launchpad.test/{repository}"),
+            format!("git+ssh://owner@git.launchpad.test/{repository}"),
+            format!("git@git.launchpad.test:{repository}"),
+            format!("https://api.launchpad.test/devel/{repository}"),
+        ] {
+            assert_eq!(super::normalise_repository(&url).unwrap(), repository);
+        }
+        assert_eq!(
+            super::ResourceTarget::parse("https://bugs.launchpad.test/project/+bug/16")
+                .unwrap()
+                .path,
+            "project/+bug/16"
+        );
+        assert!(
+            super::normalise_repository("https://git.launchpad.test.evil.example/repo").is_err()
+        );
+        assert!(
+            super::ResourceTarget::parse("https://bugs.launchpad.test.evil.example/bugs/16")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn repository_collections_are_generic_resources_not_repository_names() {
+        let target = super::ResourceTarget::parse(
+            "https://api.launchpad.test/devel/~owner/project/+git/repo/refs",
+        )
+        .unwrap();
+        assert_eq!(target.kind, super::ResourceKind::Generic);
+        assert_eq!(target.path, "~owner/project/+git/repo/refs");
+    }
 
     #[test]
     fn parses_bug_url_options() {

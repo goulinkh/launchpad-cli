@@ -1,8 +1,8 @@
 {
   "converter": "@canonical/launchpad-openapi",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "source": "https://code.launchpad.net/~launchpad-committers/launchpad-openapi/+git/launchpad-openapi",
-  "sha256": "38fef4d684d5413839d7e95483ee7f90354a8a91b20656998652e14c81ea4a50",
+  "sha256": "3dea91d5af67caee9d7e08cf58eb41a3718d80b94c4bb5297a23fa28c7d55546",
   "servers": [
     {
       "url": "https://api.launchpad.net/devel"

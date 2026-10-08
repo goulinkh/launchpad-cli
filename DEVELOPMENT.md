@@ -1,13 +1,13 @@
 # Development
 
 Run from this directory. Rust 1.88+ builds the standalone binary; Node.js 24+
-is needed only for converter updates and generator checks. No OMP, parent crate,
-`lpcli`, or parent `node_modules` is required.
+is needed only for converter updates, provenance checks, and release packaging.
+No OMP, parent crate, `lpcli`, or parent `node_modules` is required.
 
 ```sh
 npm ci
-npm run check       # generated-code freshness, rustfmt, strict Clippy
-npm test           # generator, copied workflow, transport, and CLI tests
+npm run check       # snapshot provenance, rustfmt, strict Clippy
+npm test           # release, contract, workflow, transport, and CLI tests
 cargo build --locked --release
 ```
 
@@ -20,34 +20,66 @@ back to its parent. Keep this directory outside a parent Cargo workspace.
 ## Updating the API contract
 
 ```sh
+# When upgrading the converter, resolve the latest release to an exact pin:
+npm install --save-dev --save-exact @canonical/launchpad-openapi@latest
 npm run openapi:fetch
-npm run generate
 npm run check
 npm test
 ```
 
 `openapi:fetch` invokes the pinned `@canonical/launchpad-openapi` CLI and
 compresses its exact JSON output. It records a SHA-256 of the uncompressed
-bytes, with converter version and servers. Do not hand-edit the snapshot,
-provenance, or generated types. Changes to response semantics, nullable fields,
-canonical routes, alternatives, or operation IDs belong in the Canonical
-converter, not here. Review contract changes before committing regenerated
-artifacts; `devel` can change without warning.
+bytes, with the installed converter's version and servers. Generation refuses
+an installed version that differs from the exact manifest pin; checking also
+compares provenance with the manifest and lockfile. Operation IDs may change
+between converter releases, so review generic API scripts as well as schemas.
+Do not hand-edit the snapshot or
+provenance. Changes to response semantics, nullable fields, canonical routes,
+alternatives, or operation IDs belong in the Canonical
+converter, not here. Review contract changes before committing the snapshot;
+`devel` can change without warning.
 
-The generator intentionally fails on unsupported schema constructs instead of
-guessing. Unknown schemas remain `serde_json::Value`. Generated types are used
-by `api decode`; high-level multi-resource workflows retain the original JSON
-aggregation semantics. `api call` reads routes and operation IDs directly from
-the embedded converter document, including `x-launchpad-route-alternatives`.
-A route absent from the converter is not synthesised locally.
+`src/api/` owns the typed contract boundary, schema validation, offline request
+planning, and generic operation execution. It uses `openapiv3`,
+`openapiv3-resolve`, `openapi-schema-to-json-schema`, and `jsonschema` rather than
+a custom parser, validator, or model generator. Tests parse the entire embedded
+snapshot and compile every component schema. The JSON Schema dependency has
+file and HTTP retrieval disabled; keep validation and discovery offline.
+
+`api decode` validates the component schema and preserves the original JSON.
+High-level multi-resource workflows retain their JSON aggregation semantics.
+`api call` reads routes and operation IDs from the embedded converter document,
+including `x-launchpad-route-alternatives`. A route absent from the converter is
+not synthesised locally. Unsupported serialisation fails before authentication
+or network access. `api describe` exposes the input schema and write policy for
+one operation; `api operations --compact` avoids dumping full definitions.
+
+See [docs/architecture.md](docs/architecture.md) for boundaries, extension points,
+and remaining workflow refactoring work.
+
+## Development instance
+
+Use `LAUNCHPAD_CLI_INSTANCE=development` for a development installation serving
+**https://launchpad.test/**. Machine-specific SSH routing belongs in local SSH
+configuration; checkout and backup locations belong in the git-ignored
+`.development-instance.local.md`. Discover active sessions and backend addresses
+from the running environment rather than recording them in shared instructions.
+
+See [docs/development-instance.md](docs/development-instance.md) before using
+an instance. [The live integration report](docs/dev-validation-2026-10-07.md) records
+coverage, test resources, environment changes, and outstanding failures.
+Production remains off limits for mutation testing.
 
 ## Verification without production writes
 
 The Rust test suite uses local HTTP fixtures and subprocesses. It verifies
 command coverage for every original operation, repeated filters, argument and
 JSON validation, write consent, dry runs, authentication/permission/not-found
-exit codes, generated decoding, API operation invocation, diff mapping, review
-drafts, creation recovery, and prerequisite-replacement recovery.
+exit codes, component validation, API operation invocation, diff mapping, review
+drafts, creation recovery, and offline rejection of unsupported resubmission.
+File-transport tests cover bounded HTTP responses, redirect confinement, SSH
+blob reads through a local Git transport fixture, temporary-repository cleanup,
+and isolation from inherited Git repository environment variables.
 
 Use anonymous production reads only for optional smoke tests:
 
@@ -68,8 +100,79 @@ export LAUNCHPAD_CLI_INSTANCE=staging
 
 `LAUNCHPAD_CLI_API_BASE` selects a local fixture server. Anonymous HTTP fixtures
 are allowed; OAuth is never sent over HTTP. Git workflows use actual Git and
-require `--yes`; tests must use disposable directories and must not push to a
-production branch. `--dry-run` is entirely offline.
+require `--yes`; their remotes must match the selected instance. Tests must use
+disposable directories and must not push to a production branch. `--dry-run` is entirely offline.
+
+## GitHub publishing
+
+Three workflows are included:
+
+- `.github/workflows/check.yml` verifies main-branch pushes and pull requests.
+- `.github/workflows/security.yml` checks Actions security with zizmor without
+  requiring paid GitHub Advanced Security features for a private repository.
+- `.github/workflows/release.yml` verifies `v*` tags, builds and smoke-tests
+  native binaries, and publishes a GitHub release only after every build passes.
+
+Publishing uses the workflow's built-in `GITHUB_TOKEN`; no personal access token,
+registry credentials, or extra secrets are required. Only the publishing job has
+`contents: write`. Actions are pinned to commit SHAs, checkout does not persist
+credentials, and tagged source passes the full test suite before packaging.
+Keep GitHub Actions enabled and ensure repository or organisation policies allow
+these pinned actions and the publishing job's write permission.
+
+Supported release targets:
+
+| Platform | Runner | Rust target | Archive |
+| --- | --- | --- | --- |
+| Linux x64 | `ubuntu-24.04` | `x86_64-unknown-linux-musl` | `.tar.gz` |
+| Linux arm64 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-musl` | `.tar.gz` |
+| macOS x64 | `macos-15-intel` | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS arm64 | `macos-15` | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows x64 | `windows-2025` | `x86_64-pc-windows-msvc` | `.zip` |
+| Windows arm64 | `windows-11-arm` | `aarch64-pc-windows-msvc` | `.zip` |
+
+Each archive contains the executable, README, NOTICE, and applicable licence
+texts. Archives are named `launchpad-cli-<version>-<platform>-<architecture>`;
+platform values are `linux`, `darwin`, and `win32`. Packaging checks the binary's
+version and offline agent schema without contacting Launchpad. The publish job
+requires exactly six nonempty archives and attaches `SHA256SUMS`. Linux builds
+use musl to avoid a host glibc dependency. Hosted runner availability and private
+repository Actions usage depend on the account's GitHub plan and policies.
+
+To publish the current version after committing the source:
+
+```sh
+npm run check
+npm test
+node scripts/release-metadata.mjs v0.1.0
+# No release is created until the tag is pushed:
+git tag -a v0.1.0 -m 'launchpad-cli v0.1.0'
+git push origin main
+git push origin v0.1.0
+```
+
+For later releases, update the `[package]` version in `Cargo.toml` and the
+version in `package.json`, then run `cargo check` and
+`npm install --package-lock-only --ignore-scripts` to update the lockfiles.
+Commit the changes and push a matching tag. Mismatched or invalid tags fail;
+prerelease versions such as `v0.2.0-rc.1` are marked as GitHub prereleases and do
+not become the latest stable release. Existing tags and releases are not
+rewritten or replaced by the workflow. Choose a new version instead of reusing
+an already published tag.
+
+To package one native target locally:
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin
+npm run release:package -- aarch64-apple-darwin
+```
+
+Packaging must run on the binary's matching OS and architecture so the smoke
+test actually executes it. Output goes to ignored `dist/`. After collecting all
+six archives, `npm run release:checksums` generates the same checksum manifest
+as CI. `package.json` remains private and development-only; this workflow does
+not publish to npm, crates.io, or a container registry. GitHub Releases inherit
+the repository visibility (currently private).
 
 ## Git
 

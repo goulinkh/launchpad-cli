@@ -57,6 +57,7 @@ pub fn api_base_url() -> ApiResult<String> {
         "production" => "api.launchpad.net",
         "staging" => "api.staging.launchpad.net",
         "qastaging" => "api.qastaging.launchpad.net",
+        "development" => "api.launchpad.test",
         _ => {
             return Err(LpError::Config(format!(
                 "unknown Launchpad instance: {instance}"
@@ -88,6 +89,7 @@ pub fn git_host() -> ApiResult<&'static str> {
         Some("api.launchpad.net") => Ok("git.launchpad.net"),
         Some("api.staging.launchpad.net") => Ok("git.staging.launchpad.net"),
         Some("api.qastaging.launchpad.net") => Ok("git.qastaging.launchpad.net"),
+        Some("api.launchpad.test") => Ok("git.launchpad.test"),
         _ => Err(LpError::Config(
             "cannot infer a Git host from this API base; use a local checkout".to_owned(),
         )),
@@ -186,8 +188,9 @@ fn oauth_origin() -> ApiResult<&'static str> {
         Some("api.qastaging.launchpad.net") if base.scheme() == "https" => {
             Ok("https://qastaging.launchpad.net")
         }
+        Some("api.launchpad.test") if base.scheme() == "https" => Ok("https://launchpad.test"),
         _ => Err(LpError::Config(
-            "browser login requires an official Launchpad HTTPS instance".to_owned(),
+            "browser login requires a recognised Launchpad HTTPS instance".to_owned(),
         )),
     }
 }

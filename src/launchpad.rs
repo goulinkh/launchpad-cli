@@ -14,16 +14,16 @@ use crate::auth;
 use crate::client::{Collection, GitRef, LaunchpadClient, LpError, list_git_refs, urlenc};
 use crate::diff;
 use crate::error::Error;
+use crate::git_file::{self, MAX_FILE_BYTES};
 use crate::local_git::{self, CheckoutSpec};
 use crate::render;
 use crate::request::{
-    DiscussionFormat, OneOrMany, Operation, Request, ResourceKind, ResourceTarget,
+    DiscussionFormat, FileTransport, OneOrMany, Operation, Request, ResourceKind, ResourceTarget,
     normalise_repository,
 };
 use crate::response::OperationResult;
 use crate::result::Result;
 
-const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ITEMS: usize = 50;
 const MAX_BRANCH_FALLBACK_ITEMS: usize = 250;
 const MAX_REPOSITORY_CANDIDATES: usize = 100;
@@ -36,6 +36,7 @@ const GIT_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
 
 pub async fn execute(request: &Request) -> Result<OperationResult> {
     request.validate()?;
+    request.op.check_supported()?;
     if request.op == Operation::FileRead {
         return read_repository_file(request).await;
     }
@@ -66,9 +67,6 @@ pub async fn execute(request: &Request) -> Result<OperationResult> {
         Operation::RepositoryEdit => edit_repository(&client, request).await,
         Operation::MergeProposalCreate => create_merge_proposal(&client, request).await,
         Operation::MergeProposalEdit => edit_merge_proposal(&client, request).await,
-        Operation::ReplaceMergeProposalPrerequisite => {
-            replace_merge_proposal_prerequisite(&client, request).await
-        }
         Operation::MergeProposalLinkBug | Operation::MergeProposalUnlinkBug => {
             change_merge_proposal_bug_link(&client, request).await
         }
@@ -78,7 +76,9 @@ pub async fn execute(request: &Request) -> Result<OperationResult> {
         Operation::ReviewSubmit => submit_review(&client, request).await,
         Operation::SetMergeProposalStatus => set_merge_proposal_status(&client, request).await,
         Operation::MergeProposalCheckout => checkout_merge_proposal(&client, request).await,
-        Operation::FileRead | Operation::MergeProposalPush => {
+        Operation::FileRead
+        | Operation::MergeProposalPush
+        | Operation::ReplaceMergeProposalPrerequisite => {
             Err(Error::invalid("operation dispatch is inconsistent"))
         }
     }
@@ -1195,7 +1195,7 @@ async fn repository_branch_proposals(
 ) -> Result<(Vec<Value>, bool)> {
     let canonical_repository = render::text_field(repository, "unique_name").ok_or_else(|| {
         Error::invalid(format!(
-            "cannot inspect repository {}; Launchpad omitted its unique name; accepted syntax: lp:<project>, lp://~owner/project/+git/repository, or a git.launchpad.net URL; retry with the canonical repository path",
+            "cannot inspect repository {}; Launchpad omitted its unique name; accepted syntax: lp:<project>, lp://~owner/project/+git/repository, or a Git URL for the selected Launchpad instance; retry with the canonical repository path",
             repository_identifier(repository)
         ))
     })?;
@@ -1581,7 +1581,7 @@ fn normalise_identity(
     let url = person
         .and_then(|person| render::text_field(person, "web_link"))
         .map(str::to_owned)
-        .or_else(|| username.map(|username| format!("https://launchpad.net/~{username}")));
+        .or_else(|| link.map(str::to_owned));
     Some(json!({
         "username": username,
         "display_name": display_name,
@@ -2174,105 +2174,6 @@ async fn edit_merge_proposal(
         .with_details(details))
 }
 
-async fn replace_merge_proposal_prerequisite(
-    client: &LaunchpadClient,
-    request: &Request,
-) -> Result<OperationResult> {
-    let (_, previous) = request_merge_proposal(client, request).await?;
-    let previous_status = render::text_field(&previous, "queue_status")
-        .ok_or_else(|| Error::invalid("merge proposal has no status"))?;
-    if !matches!(
-        previous_status,
-        "Work in progress" | "Needs review" | "Approved" | "Rejected"
-    ) {
-        return Err(Error::invalid(format!(
-            "cannot replace a merge proposal in status {previous_status}"
-        )));
-    }
-    let prerequisite = request.string(&request.merge_prerequisite, "merge_prerequisite")?;
-    if render::text_field(&previous, "prerequisite_git_path")
-        == Some(normalise_ref(prerequisite).as_str())
-    {
-        return Err(Error::invalid(
-            "merge proposal already has this prerequisite",
-        ));
-    }
-    let source_repository =
-        linked_resource(client, &previous, "source_git_repository_link").await?;
-    let target_repository =
-        linked_resource(client, &previous, "target_git_repository_link").await?;
-    let source_repository = render::text_field(&source_repository, "unique_name")
-        .ok_or_else(|| Error::invalid("merge proposal has no source repository name"))?;
-    let target_repository = render::text_field(&target_repository, "unique_name")
-        .ok_or_else(|| Error::invalid("merge proposal has no target repository name"))?;
-    let source_ref = render::text_field(&previous, "source_git_path")
-        .ok_or_else(|| Error::invalid("merge proposal has no source ref"))?;
-    let target_ref = render::text_field(&previous, "target_git_path")
-        .ok_or_else(|| Error::invalid("merge proposal has no target ref"))?;
-    let prerequisite_ref = normalise_ref(prerequisite);
-    let previous_url = proposal_api_url(&previous)?;
-    let prepared = prepare_merge_proposal(
-        client,
-        source_repository,
-        source_ref,
-        target_repository,
-        target_ref,
-        Some((source_repository, &prerequisite_ref)),
-        None,
-    )
-    .await?;
-    client
-        .post_pairs_url_ok(
-            previous_url.as_str(),
-            &[("ws.op", "setStatus"), ("status", "Superseded")],
-        )
-        .await?;
-    let location = match submit_merge_proposal(
-        client,
-        &prepared,
-        render::text_field(&previous, "description"),
-        render::text_field(&previous, "commit_message"),
-        previous_status != "Work in progress",
-    )
-    .await
-    {
-        Ok(location) => location,
-        Err(source) => {
-            let rollback = client
-                .post_pairs_url_ok(
-                    previous_url.as_str(),
-                    &[("ws.op", "setStatus"), ("status", previous_status)],
-                )
-                .await;
-            return Err(match rollback {
-                Ok(()) => Error::context(
-                    "cannot create replacement; previous status restored",
-                    source,
-                ),
-                Err(rollback_error) => Error::invalid(format!(
-                    "cannot create replacement: {source}; previous proposal {previous_url} remains Superseded because rollback failed: {rollback_error}"
-                )),
-            });
-        }
-    };
-    let replacement: Value = client.get_url(&location).await.map_err(|source| {
-        Error::context(
-            format!("replacement created at {location}, but cannot load it; previous proposal {previous_url} is Superseded"),
-            source.into(),
-        )
-    })?;
-    let replacement_url = render::text_field(&replacement, "web_link").unwrap_or(&location);
-    let text = format!(
-        "# Replaced Launchpad merge proposal\n\n- **Previous:** {previous_url} (Superseded)\n- **Replacement:** {replacement_url}\n\n{}",
-        render::render_proposal(&replacement, &[], &[], false, 1)
-    );
-    let mut details = proposal_details(client, &replacement).await?;
-    details["supersedes"] = json!(previous_url.as_str());
-    Ok(OperationResult::new(text)
-        .with_source_url(Some(replacement_url.to_owned()))
-        .with_details(details))
-}
-
 async fn change_merge_proposal_bug_link(
     client: &LaunchpadClient,
     request: &Request,
@@ -2314,7 +2215,7 @@ async fn add_comment(client: &LaunchpadClient, request: &Request) -> Result<Oper
                 parameters.push(("subject", subject));
             }
             client.post_pairs_url_ok(&url, &parameters).await?;
-            ("bug", launchpad_web_url(&target.path, "bug"))
+            ("bug", url)
         }
         ResourceKind::MergeProposal { .. } | ResourceKind::MergeProposalId { .. } => {
             let (_, proposal) = resolve_merge_proposal_target(client, request.target()?).await?;
@@ -2514,7 +2415,7 @@ async fn checkout_merge_proposal(
 async fn read_repository_file(request: &Request) -> Result<OperationResult> {
     let repository = normalise_repository(request.repository()?)?;
     let repository = repository.trim_matches('/');
-    let path = request.path("path")?.trim();
+    let path = request.path("path")?;
     let branch = request.branch.as_deref().unwrap_or("(default)");
     let context =
         format!("cannot read Launchpad repository file {repository}:{path} at branch {branch}");
@@ -2531,12 +2432,28 @@ async fn read_repository_file(request: &Request) -> Result<OperationResult> {
     if let Some(branch) = request.branch.as_deref() {
         url.query_pairs_mut().append_pair("h", branch);
     }
-    let text = fetch_git_plain_file(&url, &context).await?;
+    let transport = request.transport.unwrap_or_default();
+    let (text, revision) = match transport {
+        FileTransport::Https => (fetch_git_plain_file(&url, &context).await?, None),
+        FileTransport::Ssh => {
+            let remote = format!("git+ssh://{git_host}/{encoded_repository}");
+            let file = git_file::read(&remote, path, request.branch.as_deref())
+                .await
+                .map_err(|source| Error::context(&context, source))?;
+            url = Url::parse(&remote).map_err(|source| Error::Url {
+                url: remote,
+                source,
+            })?;
+            (file.text, Some(file.revision))
+        }
+    };
     let details = json!({
         "kind": "file",
         "repository": request.repository()?,
         "path": request.path("path")?,
         "branch": request.branch,
+        "transport": transport,
+        "revision": revision,
         "bytes": text.len(),
     });
     Ok(OperationResult::new(text)
@@ -2545,31 +2462,38 @@ async fn read_repository_file(request: &Request) -> Result<OperationResult> {
 }
 
 async fn fetch_git_plain_file(url: &Url, context: &str) -> Result<String> {
-    const FILE_TRANSPORT_GUIDANCE: &str = "git.launchpad.net/plain uses anonymous Git HTTP, not Launchpad API login; check repository, path and ref or use an authenticated Git checkout";
+    const FILE_TRANSPORT_GUIDANCE: &str = "HTTPS file reads use anonymous Git HTTP, not Launchpad API login; check repository, path and ref or explicitly use --transport ssh";
 
-    let response = reqwest::Client::new()
-        .get(url.clone())
-        .send()
-        .await
-        .map_err(|source| {
-            Error::context(
-                context,
-                Error::Web {
-                    url: url.to_string(),
-                    source,
-                },
-            )
-        })?;
-    if response.url().scheme() != url.scheme()
-        || response.url().host_str() != url.host_str()
-        || !response.url().path().contains("/plain/")
-    {
-        let host = response.url().host_str().unwrap_or("unknown host");
+    let web_error = |source| {
+        Error::context(
+            format!("{context}; {FILE_TRANSPORT_GUIDANCE}"),
+            Error::Web {
+                url: url.to_string(),
+                source,
+            },
+        )
+    };
+    let origin = url.origin();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("too many Git file redirects")
+            } else if attempt.url().origin() == origin && attempt.url().path().contains("/plain/") {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .map_err(web_error)?;
+    let mut response = client.get(url.clone()).send().await.map_err(web_error)?;
+    if response.status().is_redirection() {
         return Err(Error::context(
             context,
             Error::GitFileResponse {
                 reason: format!(
-                    "redirected to {host} outside a Git plain-file URL; {FILE_TRANSPORT_GUIDANCE}"
+                    "redirected outside this Git origin or plain-file route; redirect not followed; {FILE_TRANSPORT_GUIDANCE}"
                 ),
             },
         ));
@@ -2586,7 +2510,7 @@ async fn fetch_git_plain_file(url: &Url, context: &str) -> Result<String> {
         return Err(Error::context(
             context,
             Error::GitFileResponse {
-                reason: format!("git.launchpad.net returned HTTP {status}{guidance}"),
+                reason: format!("Git hosting returned HTTP {status}{guidance}"),
             },
         ));
     }
@@ -2606,29 +2530,33 @@ async fn fetch_git_plain_file(url: &Url, context: &str) -> Result<String> {
             context,
             Error::GitFileResponse {
                 reason: format!(
-                    "git.launchpad.net returned an HTML page instead of file content; {FILE_TRANSPORT_GUIDANCE}"
+                    "Git hosting returned an HTML page instead of file content; {FILE_TRANSPORT_GUIDANCE}"
                 ),
             },
         ));
     }
-    let bytes = response.bytes().await.map_err(|source| {
+    let too_large = || {
         Error::context(
-            context,
-            Error::Web {
-                url: url.to_string(),
-                source,
-            },
-        )
-    })?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(Error::context(
             context,
             Error::GitFileResponse {
                 reason: format!("Launchpad file is larger than {MAX_FILE_BYTES} bytes"),
             },
-        ));
+        )
+    };
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_FILE_BYTES as u64)
+    {
+        return Err(too_large());
     }
-    let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(web_error)? {
+        if chunk.len() > MAX_FILE_BYTES - bytes.len() {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
         Error::context(
             context,
             Error::GitFileResponse {
@@ -2641,7 +2569,7 @@ async fn fetch_git_plain_file(url: &Url, context: &str) -> Result<String> {
             context,
             Error::GitFileResponse {
                 reason: format!(
-                    "git.launchpad.net returned an OpenID error instead of file content; {FILE_TRANSPORT_GUIDANCE}"
+                    "Git hosting returned an OpenID error instead of file content; {FILE_TRANSPORT_GUIDANCE}"
                 ),
             },
         ));
@@ -2847,6 +2775,7 @@ fn diff_download_url(diff_text_link: &str) -> Result<Url> {
         Some("api.launchpad.net") => Some("code.launchpad.net"),
         Some("api.staging.launchpad.net") => Some("code.staging.launchpad.net"),
         Some("api.qastaging.launchpad.net") => Some("code.qastaging.launchpad.net"),
+        Some("api.launchpad.test") => Some("code.launchpad.test"),
         _ => None,
     };
     if let Some(web_host) = web_host {
@@ -3170,15 +3099,23 @@ enum GitVisibility {
 }
 
 async fn git_server_commit(repository: &Value, path: &str) -> GitVisibility {
-    let Some(url) = render::text_field(repository, "git_https_url") else {
-        return GitVisibility::Unknown;
-    };
-    let Ok(parsed) = Url::parse(url) else {
-        return GitVisibility::Unknown;
-    };
-    if parsed.scheme() != "https" && !(cfg!(test) && parsed.scheme() == "file") {
-        return GitVisibility::Unknown;
+    for field in ["git_https_url", "git_ssh_url"] {
+        let Some(url) = render::text_field(repository, field) else {
+            continue;
+        };
+        let test_file = cfg!(test) && url.starts_with("file://");
+        if !test_file && local_git::validate_launchpad_remote(url).is_err() {
+            continue;
+        }
+        match git_remote_commit(url, path).await {
+            GitVisibility::Unknown => continue,
+            visibility => return visibility,
+        }
     }
+    GitVisibility::Unknown
+}
+
+async fn git_remote_commit(url: &str, path: &str) -> GitVisibility {
     let result = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("git")
@@ -3293,15 +3230,6 @@ fn resource_kind(resource: &Value) -> String {
         .to_owned()
 }
 
-fn launchpad_web_url(path: &str, kind: &str) -> String {
-    let host = if kind == "bug" {
-        "https://bugs.launchpad.net"
-    } else {
-        "https://code.launchpad.net"
-    };
-    format!("{host}/{path}")
-}
-
 fn encode_path(path: &str) -> String {
     path.split('/')
         .map(|segment| utf8_percent_encode(segment, GIT_PATH_SEGMENT_ENCODE_SET).to_string())
@@ -3320,12 +3248,13 @@ fn floor_char_boundary(value: &str, index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::time::Duration;
 
-    use crate::client::LaunchpadClient;
     use chrono::DateTime;
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
     use url::Url;
 
     use super::{
@@ -3335,8 +3264,8 @@ mod tests {
         repository_branch_proposals, select_preview_diff, select_proposal, thread_state,
         validate_current_preview_diff, view_merge_proposal_for_branch,
     };
+    use crate::client::LaunchpadClient;
     use crate::request::{DiscussionFormat, Request, ResourceTarget};
-    use tokio::sync::mpsc;
 
     async fn read_request_headers(stream: &mut TcpStream) -> String {
         let mut request = Vec::new();
@@ -3433,12 +3362,12 @@ mod tests {
                 "HTTP/1.1 302 Found\r\nLocation: http://{address}/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
             stream.write_all(redirect.as_bytes()).await.unwrap();
-            let (mut stream, _) = listener.accept().await.unwrap();
-            read_request_headers(&mut stream).await;
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\nConnection: close\r\n\r\nlogin")
-                .await
-                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "must not follow a login redirect"
+            );
         });
         let url = Url::parse(&format!("http://{address}/repo/plain/package.json")).unwrap();
         let error = fetch_git_plain_file(&url, "cannot read repo:package.json")
@@ -3449,6 +3378,90 @@ mod tests {
         assert!(error.contains("redirected"));
         assert!(error.contains("anonymous Git HTTP"));
         assert!(!error.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn file_size_limit_applies_to_declared_and_streamed_bodies() {
+        for chunked in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_request_headers(&mut stream).await;
+                let size = super::MAX_FILE_BYTES + 1;
+                let response = if chunked {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{size:x}\r\n{}\r\n0\r\n\r\n",
+                        "x".repeat(size)
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                    )
+                };
+                // An early size rejection may close the connection mid-write.
+                stream.write_all(response.as_bytes()).await.ok();
+            });
+            let url = Url::parse(&format!("http://{address}/repo/plain/large")).unwrap();
+            let error = fetch_git_plain_file(&url, "large fixture")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("larger than"), "{error}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn file_redirects_can_stay_on_the_same_plain_file_origin() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request_headers(&mut stream).await;
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /canonical/plain/README\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(
+                read_request_headers(&mut stream)
+                    .await
+                    .starts_with("GET /canonical/plain/README ")
+            );
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello").await.unwrap();
+        });
+        let url = Url::parse(&format!("http://{address}/repo/plain/README")).unwrap();
+        assert_eq!(
+            fetch_git_plain_file(&url, "redirect fixture")
+                .await
+                .unwrap(),
+            "hello"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_redirects_cannot_contact_another_origin() {
+        let destination = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let destination_address = destination.local_addr().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request_headers(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{destination_address}/repo/plain/README\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let url = Url::parse(&format!("http://{address}/repo/plain/README")).unwrap();
+        let error = fetch_git_plain_file(&url, "redirect fixture")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("redirect not followed"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), destination.accept())
+                .await
+                .is_err()
+        );
+        server.await.unwrap();
     }
 
     #[test]
@@ -4060,7 +4073,6 @@ mod tests {
     }
     async fn proposal_scenario(
         reject_creation: bool,
-        create_only: bool,
         cross_repository: bool,
         recover_existing: bool,
     ) -> (
@@ -4192,14 +4204,7 @@ mod tests {
                     statuses_tx.send(new_status).unwrap();
                     ("200 OK", "{}".to_owned(), None)
                 } else if method == "POST" && path == source_path {
-                    assert_eq!(
-                        status,
-                        if create_only {
-                            "Needs review"
-                        } else {
-                            "Superseded"
-                        }
-                    );
+                    assert_eq!(status, "Needs review");
                     creation_tx.send(parameters).unwrap();
                     if reject_creation {
                         (
@@ -4256,31 +4261,19 @@ mod tests {
             }
         });
         let client = LaunchpadClient::new(None).with_base_url(base);
-        let input = if create_only {
-            json!({
-                "op": "merge_proposal_create",
-                "repository": repository,
-                "source_ref": "feature",
-                "target_ref": "main",
-                "prerequisite_ref": "base",
-                "prerequisite_repository": cross_repository.then_some(prerequisite_repository),
-                "description": "Stacked change",
-                "commit_message": "Add dependent feature"
-            })
-        } else {
-            json!({
-                "op": "replace_merge_proposal_prerequisite",
-                "target": format!("lp://{repository}/+merge/42"),
-                "merge_prerequisite": "base"
-            })
-        };
+        let input = json!({
+            "op": "merge_proposal_create",
+            "repository": repository,
+            "source_ref": "feature",
+            "target_ref": "main",
+            "prerequisite_ref": "base",
+            "prerequisite_repository": cross_repository.then_some(prerequisite_repository),
+            "description": "Stacked change",
+            "commit_message": "Add dependent feature"
+        });
         let request: Request = serde_json::from_value(input).unwrap();
         request.validate().unwrap();
-        let result = if create_only {
-            super::create_merge_proposal(&client, &request).await
-        } else {
-            super::replace_merge_proposal_prerequisite(&client, &request).await
-        };
+        let result = super::create_merge_proposal(&client, &request).await;
         server.abort();
         let mut statuses = Vec::new();
         while let Ok(status) = statuses_rx.try_recv() {
@@ -4291,39 +4284,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacement_preserves_main_target_and_sets_prerequisite() {
-        let (result, statuses, parameters) = proposal_scenario(false, false, false, false).await;
-        assert_eq!(statuses, ["Superseded"]);
-        let fields: HashMap<_, _> = parameters.into_iter().collect();
-        assert!(fields["merge_target"].ends_with("/+ref/main"));
-        assert!(fields["merge_prerequisite"].ends_with("/+ref/base"));
-        assert_eq!(fields["needs_review"], "true");
-        assert_eq!(fields["initial_comment"], "Stacked change");
-        let result = result.unwrap();
-        assert!(result.text.contains("**Prerequisite:** refs/heads/base"));
-        assert!(result.text.contains("**Target:** refs/heads/main"));
-        assert!(
-            result
-                .text
-                .contains("https://code.launchpad.net/new/+merge/43")
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_replacement_restores_old_status() {
-        let (result, statuses, _) = proposal_scenario(true, false, false, false).await;
-        assert_eq!(statuses, ["Superseded", "Needs review"]);
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("previous status restored")
-        );
+    async fn rejected_creation_does_not_change_existing_proposal_status() {
+        let (result, statuses, _) = proposal_scenario(true, false, false).await;
+        assert!(statuses.is_empty());
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn creation_keeps_main_target_separate_from_prerequisite() {
-        let (result, statuses, parameters) = proposal_scenario(false, true, false, false).await;
+        let (result, statuses, parameters) = proposal_scenario(false, false, false).await;
         assert!(statuses.is_empty());
         let fields: HashMap<_, _> = parameters.into_iter().collect();
         assert!(fields["merge_target"].ends_with("/+ref/main"));
@@ -4348,7 +4317,7 @@ mod tests {
 
     #[tokio::test]
     async fn creation_confirms_cross_repository_prerequisite() {
-        let (result, _, parameters) = proposal_scenario(false, true, true, false).await;
+        let (result, _, parameters) = proposal_scenario(false, true, false).await;
         let fields: HashMap<_, _> = parameters.into_iter().collect();
         assert!(fields["merge_target"].ends_with("/repo/+ref/main"));
         assert!(fields["merge_prerequisite"].ends_with("/base-repo/+ref/base"));
@@ -4362,7 +4331,7 @@ mod tests {
 
     #[tokio::test]
     async fn creation_retry_recovers_recent_matching_proposal_without_posting() {
-        let (result, statuses, parameters) = proposal_scenario(false, true, false, true).await;
+        let (result, statuses, parameters) = proposal_scenario(false, false, true).await;
         assert!(statuses.is_empty());
         assert!(parameters.is_empty());
         let result = result.unwrap();

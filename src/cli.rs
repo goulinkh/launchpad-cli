@@ -32,14 +32,15 @@ const NUMBER_FIELDS: &[&str] = &[
 const LIST_FIELDS: &[&str] = &["status", "importance", "tags", "official_bug_tags"];
 
 pub fn command() -> Command {
-    let mut root = Command::new("launchpad-cli").version(env!("CARGO_PKG_VERSION"))
+    let mut root = Command::new("launchpad-cli")
+        .version(env!("CARGO_PKG_VERSION"))
         .about("Standalone Launchpad tools for people and agents")
-        .after_help("Discover: launchpad-cli schema\nAPI coverage: launchpad-cli api operations\nWrites require --yes. --dry-run validates without contacting Launchpad.\nLaunchpad bugs and target-specific bug tasks are distinct; merge proposals are not pull requests.")
+        .after_help("Discover: launchpad-cli schema\nAPI coverage: launchpad-cli api operations --compact\nWrites require --yes. --dry-run validates without contacting Launchpad.\nLaunchpad bugs and target-specific bug tasks are distinct; merge proposals are not pull requests.")
         .subcommand_required(true)
-        .arg(Arg::new("json").long("json").global(true).action(ArgAction::SetTrue).conflicts_with("text").help("Emit a versioned JSON envelope (default when piped)"))
-        .arg(Arg::new("text").long("text").global(true).action(ArgAction::SetTrue).help("Emit plain text or Markdown"))
-        .arg(Arg::new("yes").long("yes").global(true).action(ArgAction::SetTrue).help("Explicitly authorise this invocation's side effects"))
-        .arg(Arg::new("dry-run").long("dry-run").global(true).action(ArgAction::SetTrue).help("Validate and print the request; do not execute"));
+        .arg(switch("json", "Emit a versioned JSON envelope (default when piped)").global(true).conflicts_with("text"))
+        .arg(switch("text", "Emit plain text or Markdown").global(true))
+        .arg(switch("yes", "Explicitly authorise this invocation's side effects").global(true))
+        .arg(switch("dry-run", "Validate and print the request; do not execute").global(true));
     let groups: std::collections::BTreeSet<_> = COMMANDS.iter().map(|spec| spec.group).collect();
     for group in groups {
         let mut noun = Command::new(group)
@@ -78,32 +79,93 @@ pub fn command() -> Command {
         }
         root = root.subcommand(noun);
     }
-    root.subcommand(Command::new("schema").about("Print the offline CLI command catalog and JSON input schema"))
-        .subcommand(Command::new("tool").about("Call a copied tool directly using its original JSON operation name").arg(input_arg().required(true)))
-        .subcommand(Command::new("auth").subcommand_required(true)
-            .subcommand(Command::new("status").about("Inspect local credentials without revealing secrets"))
-            .subcommand(Command::new("login").about("Authorise launchpad-cli with Launchpad OAuth")
-                .arg(Arg::new("start").long("start").action(ArgAction::SetTrue).conflicts_with("finish"))
-                .arg(Arg::new("finish").long("finish").action(ArgAction::SetTrue)))
-            .subcommand(Command::new("import").about("Import launchpad-cli OAuth credentials from JSON").arg(input_arg().required(true)))
-            .subcommand(Command::new("logout").about("Remove this CLI's local credentials")))
-        .subcommand(Command::new("api").subcommand_required(true)
-            .subcommand(Command::new("operations").about("List converter-owned semantic operation IDs").arg(Arg::new("filter").long("filter")))
-            .subcommand(Command::new("schema").about("Print the authoritative OpenAPI document or component schema").arg(Arg::new("component")))
-            .subcommand(Command::new("decode").about("Decode JSON with a generated Rust response type").arg(Arg::new("component").required(true)).arg(input_arg().required(true)))
-            .subcommand(Command::new("call").about("Call an OpenAPI operation ID; template and body fields come from --input JSON")
-                .arg(Arg::new("operation").required(true)).arg(input_arg())))
+    root.subcommand(
+        Command::new("schema").about("Print the offline CLI command catalog and JSON input schema"),
+    )
+    .subcommand(
+        Command::new("tool")
+            .about("Call a tool directly using its original JSON operation name")
+            .arg(input_arg().required(true)),
+    )
+    .subcommand(auth_command())
+    .subcommand(api_command())
+}
+
+fn auth_command() -> Command {
+    Command::new("auth")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("status").about("Inspect local credentials without revealing secrets"),
+        )
+        .subcommand(
+            Command::new("login")
+                .about("Authorise launchpad-cli with Launchpad OAuth")
+                .arg(switch("start", "Start browser authorisation").conflicts_with("finish"))
+                .arg(switch("finish", "Complete browser authorisation")),
+        )
+        .subcommand(
+            Command::new("import")
+                .about("Import launchpad-cli OAuth credentials from JSON")
+                .arg(input_arg().required(true)),
+        )
+        .subcommand(Command::new("logout").about("Remove this CLI's local credentials"))
+}
+
+fn api_command() -> Command {
+    Command::new("api")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("operations")
+                .about("List converter-owned semantic operation IDs")
+                .arg(Arg::new("filter").long("filter"))
+                .arg(switch(
+                    "compact",
+                    "Omit full definitions; use api describe for one operation",
+                )),
+        )
+        .subcommand(
+            Command::new("describe")
+                .about("Inspect one operation, its input schema and write policy offline")
+                .arg(Arg::new("operation").required(true)),
+        )
+        .subcommand(
+            Command::new("schema")
+                .about("Print the authoritative OpenAPI document or component schema")
+                .arg(Arg::new("component")),
+        )
+        .subcommand(
+            Command::new("decode")
+                .about("Validate JSON against a converter-owned component schema")
+                .arg(Arg::new("component").required(true))
+                .arg(input_arg().required(true)),
+        )
+        .subcommand(
+            Command::new("call")
+                .about(
+                    "Call an OpenAPI operation ID; template and body fields come from --input JSON",
+                )
+                .arg(Arg::new("operation").required(true))
+                .arg(input_arg()),
+        )
+}
+
+fn switch(name: &'static str, help: &'static str) -> Arg {
+    Arg::new(name)
+        .long(name)
+        .action(ArgAction::SetTrue)
+        .help(help)
 }
 
 pub fn catalog() -> Value {
     json!({
         "commands": COMMANDS,
+        "unsupported_operations": ["replace_merge_proposal_prerequisite"],
         "request_schema": schemars::schema_for!(Request),
         "input": "--input FILE or --input - (stdin); high-level commands omit op",
         "output": { "schema_version": 1, "success": { "ok": true, "data": "command-specific object" }, "failure": { "ok": false, "error": { "code": "stable identifier", "message": "description" } } },
-        "exit_codes": { "0": "success", "1": "transport or runtime error", "2": "invalid input or missing --yes", "3": "authentication required/rejected", "4": "permission denied", "5": "not found" },
+        "exit_codes": { "0": "success", "1": "transport or runtime error", "2": "invalid input, unsupported operation, or missing --yes", "3": "authentication required/rejected or ambiguous HTTP 401 access denial", "4": "permission denied", "5": "not found" },
         "safety": "All remote writes, Git pushes, and local checkout writes require --yes. --dry-run performs no network or Git activity.",
-        "api": "api operations and api schema expose the converter-owned API contract; api call accepts an operation ID and --input with params and body"
+        "api": "Discover with api operations --compact --filter TEXT; inspect with api describe OPERATION; api call OPERATION --input FILE|- accepts params and body; api schema exposes the original OpenAPI contract"
     })
 }
 

@@ -23,9 +23,17 @@ cargo install --locked --path .
 launchpad-cli --help
 ```
 
+Native archives are also published to
+[GitHub Releases](https://github.com/goulinkh/launchpad-cli/releases) when a
+version tag is pushed. Linux (musl), macOS, and Windows builds are available
+for x64 and arm64, with `SHA256SUMS`. Extract the archive and put
+`launchpad-cli` (`launchpad-cli.exe` on Windows) on your `PATH`. Access to
+releases follows the repository's visibility; private releases require GitHub
+authentication. Node.js and Rust are not needed to run a downloaded binary.
+
 This directory is a self-contained project. Move or copy it elsewhere without
 its parent checkout. `package.json` is a private, **development-only** package
-for OpenAPI generation, not a JavaScript CLI wrapper.
+for OpenAPI snapshot updates and release tooling, not a JavaScript CLI wrapper.
 
 ## Quick start
 
@@ -66,13 +74,19 @@ Use real resource identifiers and explicit authorisation for writes. Local
 checkout and Git push also require `--yes`. `--dry-run` validates and prints
 input **without network calls, credentials loading, or Git activity**; it does
 not promise that a remote resource exists or that your account may modify it.
-Merge prerequisite replacement retains the copied recovery behaviour; proposal
-creation retains index/preview waits and duplicate-creation recovery.
+Proposal creation retains index/preview waits and duplicate-creation recovery.
+Prerequisite replacement is not exported by Launchpad's API. The compatibility
+command reports `unsupported_operation` before loading credentials or sending
+requests, including on dry runs; `schema` lists it as unsupported. Use the web
+resubmit flow instead. Creating a new proposal with a prerequisite works, but
+does not establish a supersedes relationship.
 
 ## Agents and automation
 
 ```sh
 launchpad-cli schema --json
+launchpad-cli api operations --compact --filter getByPath
+launchpad-cli api describe git_repositories-getByPath
 launchpad-cli merge-proposal review --help
 printf '%s' '{"target":"lp://~owner/project/+git/repo/+merge/123","preview_diff_id":456}' |
   launchpad-cli merge-proposal inline-comments --input - --json
@@ -81,7 +95,7 @@ printf '%s' '{"op":"resource_view","target":"lp://bugs/1?comments=0"}' |
 ```
 
 `schema` is offline and exposes the command catalog, allowed fields, required
-fields, effect classifications, and a Rust-derived JSON input schema. All **31
+fields, effect classifications, and a Rust-derived JSON input schema. All **30
 original tool operation names** are callable through `tool --input`. Noun–verb
 commands use the same validation and execution code, but omit `op` from their
 JSON input. Flags use hyphens; JSON keys use underscores. Boolean flags accept
@@ -107,9 +121,22 @@ colour codes, progress spinners, browser launches, or confirmation prompts in
 machine workflows. Interactive `auth login` is the only command that waits for
 user input; use its split flow for automation. Help/version output remains text.
 
+For API tasks, discover a compact operation list, describe the exact operation,
+then validate the input with `api call ... --dry-run` before executing it.
+`api describe` returns a self-contained JSON Schema input contract, response
+definitions, side-effect classification, and whether `--yes` is required.
+Unsupported request encodings are reported explicitly. Schema validation errors
+include `error.details.instance_path` and `error.details.schema_path` JSON
+pointers so an agent can locate the invalid field without parsing prose.
+Descriptions and schemas are offline; defaults are not silently inserted.
+
 Exit codes: `0` success; `1` transport/runtime failure; `2` invalid input or
-missing `--yes`; `3` authentication required/rejected; `4` permission denied;
-`5` resource not found. Diagnostics never mix with successful JSON on stdout.
+missing `--yes` or unsupported operation; `3` authentication required/rejected
+or HTTP 401 access denial; `4` HTTP 403 permission denied; `5` resource not found.
+Launchpad sometimes returns 401 for insufficient permissions even with valid
+credentials. Its diagnostic reflects this ambiguity; API 401/403 errors also
+expose `error.details.http_status`. Diagnostics never mix with successful JSON
+on stdout.
 
 ## Authentication and instances
 
@@ -138,40 +165,77 @@ Windows, the config directory with appropriate user-only ACLs.
 
 | Environment variable | Purpose |
 | --- | --- |
-| `LAUNCHPAD_CLI_INSTANCE` | `production` (default), `staging`, or `qastaging` |
+| `LAUNCHPAD_CLI_INSTANCE` | `production` (default), `staging`, `qastaging`, or `development` (`launchpad.test`) |
 | `LAUNCHPAD_CLI_API_BASE` | Complete API base override for a local server or other version |
-| `LAUNCHPAD_CLI_ANONYMOUS=1` | Force anonymous reads; reject authenticated operations |
+| `LAUNCHPAD_CLI_ANONYMOUS=1` | Force anonymous API reads; reject authenticated API operations |
 | `LAUNCHPAD_CLI_CREDENTIALS` | Explicit credentials-file override |
 
 Authenticated API requests require HTTPS. API hypermedia and Location links
 must stay within the configured origin and version; redirects are not followed
 with OAuth. Writes are never automatically retried. Local Git workflows check
 Launchpad Git remote hosts and use Git's own authentication, not API OAuth.
+Git remotes must match the selected instance; development runs cannot push to
+production. Index checks and checkouts can fall back from HTTPS to SSH.
 Checkouts default to `~/.launchpad-cli/checkouts/`, or use `--directory`.
-Repository file reads are anonymous Git HTTP on the selected official
-Launchpad instance; private files need an authenticated Git checkout. A custom
+Repository file reads default to anonymous HTTPS. To use Git's SSH credentials
+for private files or an instance without working Git HTTPS, explicitly select SSH:
+
+```sh
+launchpad-cli repository file '~owner/project/+git/repo' \
+  --path README.md --branch main --transport ssh
+```
+
+SSH mode shallow-fetches the selected ref into a disposable bare repository,
+reads committed blob bytes without a checkout or filters, and removes it on
+success or failure. It does not change an existing working tree or fall back
+silently between transports. Omitting `--branch` uses the remote's `HEAD`.
+The result includes the resolved commit SHA. SSH uses the user's SSH config
+and `GIT_SSH_COMMAND`, not API OAuth, even with anonymous API mode enabled.
+
+Both modes accept only UTF-8 files up to 2 MiB. HTTPS reads enforce the limit
+while streaming, time out after 30 seconds, and follow redirects only within
+the same Git origin and plain-file routes. SSH reads time out after 120 seconds;
+a shallow fetch can still transfer more data than the requested file. A custom
 API host cannot silently fall back to production Git hosting.
 
-## OpenAPI authority and generated Rust types
+The development server at `https://launchpad.test/` is supported with
+`LAUNCHPAD_CLI_INSTANCE=development`. See
+[Development instance](docs/development-instance.md) for SSH access, services,
+and known environment limitations.
+
+## OpenAPI authority and runtime validation
 
 The [Launchpad OpenAPI converter](https://code.launchpad.net/~launchpad-committers/launchpad-openapi/+git/launchpad-openapi),
-npm package **`@canonical/launchpad-openapi`**, owns response schemas,
-nullability, route coverage, and semantic operation IDs. We do not parse WADL,
+npm package **`@canonical/launchpad-openapi`** (pinned to **0.0.4**), owns response
+schemas, nullability, route coverage, and semantic operation IDs. We do not parse WADL,
 maintain a competing route catalog, or infer missing field types.
+
+Converter 0.0.4 replaces numeric `-route-N` operation suffixes with semantic
+labels. Generic API scripts using old IDs must rediscover them with
+`api operations --compact --filter TEXT`; there are no compatibility aliases.
+High-level noun–verb commands and their legacy tool names are unchanged.
 
 The converter's compressed, unmodified output is committed at
 `openapi/launchpad.json.gz`; `openapi/provenance.json` records its package
-version, servers, and SHA-256. `src/generated.rs` contains all component response
-types generated from that snapshot. Required fields stay required, nullable
-fields remain nullable, missing optional fields remain distinct from explicit
-null, enums retain exact Launchpad values, and unconstrained fields remain
-`serde_json::Value`. Aggregate tool workflows retain their copied dynamic JSON
-projections rather than imposing extra schema assumptions on partial resources.
+version, servers, and SHA-256. OpenAPI 3.0 parsing uses `openapiv3`, reference
+resolution uses `openapiv3-resolve`, and validation uses `jsonschema` with
+`openapi-schema-to-json-schema` for dialect conversion. There is no custom
+OpenAPI parser, schema validator, or Rust model generator. Only Launchpad's
+route-alternative extension and CLI request-encoding policy are handled locally.
+
+Required fields, nullable values, enums, bounds, patterns, composition, and
+recursive component references are validated without coercing the input.
+Unknown fields follow the schema's `additionalProperties` policy. `format`
+strings remain annotations (numeric/byte formats are converted by the dialect
+adapter). Validation never fetches external references. Aggregate tool workflows
+retain their dynamic JSON projections instead of applying full-resource schemas
+to partial responses.
 
 Discover and call converter-owned operations, including alternative routes:
 
 ```sh
-launchpad-cli api operations --filter getByPath
+launchpad-cli api operations --compact --filter getByPath
+launchpad-cli api describe git_repositories-getByPath
 launchpad-cli api schema git_ref-full
 printf '%s' '{"params":{"path":"launchpad"}}' |
   launchpad-cli api call git_repositories-getByPath --input - --json
@@ -180,21 +244,31 @@ printf '%s' '{"start":0,"entries":[]}' |
 ```
 
 `api call` takes `{"params":{…},"body":{…}}`. Path/query fields and body media
-types come from the selected operation. Required parameters and declared scalar
-and enum types are checked. `api decode` uses the generated Rust response types
-for strict decoding; it does not silently repair incomplete upstream schemas.
-API writes require `--yes`; `--dry-run` prints the resolved request. Binary and
-multipart bodies are not supported by this generic JSON interface; use dedicated
-tools where available. Unknown operation IDs fail, rather than inventing routes.
+types come from the selected operation, including inherited parameters and
+component references. `api decode` validates against a component schema and
+returns the original JSON unchanged; it does not repair incomplete schemas.
+`api schema` always returns the original converter document or component.
 
-Regeneration needs Node.js 24+ but ordinary Cargo builds are offline with respect
-to schema generation:
+Named POST operations send the converter's fixed `ws.op` selector in form data,
+as required by Launchpad. Callers cannot override that selector.
+
+API writes require `--yes`; `--dry-run` runs the same validation and encoding as
+execution, then prints the request with `executed: false`. Supported encodings
+are scalar simple-path parameters, form-style scalar/array query parameters,
+JSON bodies, and scalar/repeated-field URL-encoded forms. Header/cookie
+parameters, other styles, custom body encodings, binary/multipart bodies, and
+external schema references fail explicitly. Use dedicated tools where available.
+Unknown or ambiguous operation IDs fail rather than inventing routes. The
+configured instance determines the API base, never a per-operation server URL.
+
+Snapshot updates need Node.js 24+; Cargo builds do not run a generator or fetch
+Launchpad's schema:
 
 ```sh
 npm ci
 npm run openapi:fetch   # invokes the pinned Canonical converter
-npm run generate       # creates Rust types from its exact output
-npm run generate:check # detects stale types or altered provenance
+npm run openapi:check  # verifies snapshot provenance
+cargo test --locked   # checks runtime parsing and schema validation
 ```
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for verification. Code provenance and licence

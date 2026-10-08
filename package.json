@@ -4,15 +4,20 @@
   "private": true,
   "description": "Standalone, agent-friendly Rust CLI for Launchpad",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "openapi:fetch": "node scripts/fetch-openapi.mjs",
-    "generate": "node scripts/generate-api.mjs",
-    "generate:check": "node scripts/generate-api.mjs --check",
-    "check": "npm run generate:check && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings",
-    "test": "node --test scripts/*.test.mjs && cargo test --locked"
+    "openapi:check": "node scripts/check-openapi.mjs",
+    "check:release": "node --check scripts/release-metadata.mjs && node --check scripts/package-release.mjs && node --check scripts/release-checksums.mjs",
+    "check": "npm run openapi:check && npm run check:release && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings",
+    "test": "node --test scripts/*.test.mjs && cargo test --locked",
+    "release:metadata": "node scripts/release-metadata.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "release:checksums": "node scripts/release-checksums.mjs"
   },
   "devDependencies": {
-    "@canonical/launchpad-openapi": "0.0.3"
+    "@canonical/launchpad-openapi": "0.0.4"
   }
 }

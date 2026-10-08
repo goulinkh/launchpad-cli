@@ -394,9 +394,8 @@ pub fn render_bug_search(target: &str, query: Option<&str>, tasks: &[Value]) -> 
         let title = text_field(task, "title").unwrap_or("Untitled");
         let status = text_field(task, "status").unwrap_or("Unknown");
         let importance = text_field(task, "importance").unwrap_or("Unknown");
-        format!(
-            "- [#{id}: {title}](https://bugs.launchpad.net/bugs/{id}) — {status} · {importance}"
-        )
+        let url = text_field(task, "web_link").unwrap_or(bug_link);
+        format!("- [#{id}: {title}]({url}) — {status} · {importance}")
     }));
     lines.join("\n\n")
 }
@@ -807,6 +806,18 @@ mod tests {
         DiscussionSections, render_inline_comments, render_proposal_discussion,
         render_review_drafts,
     };
+
+    #[test]
+    fn bug_search_preserves_the_instance_in_resource_links() {
+        let tasks = [serde_json::json!({
+            "bug_link": "https://api.launchpad.test/devel/bugs/16",
+            "web_link": "https://bugs.launchpad.test/project/+bug/16",
+            "title": "Test bug", "status": "New", "importance": "Low"
+        })];
+        let text = super::render_bug_search("project", None, &tasks);
+        assert!(text.contains("https://bugs.launchpad.test/project/+bug/16"));
+        assert!(!text.contains("launchpad.net"));
+    }
 
     #[test]
     fn labels_empty_inline_comment_bodies() {

@@ -89,10 +89,7 @@ pub async fn checkout(spec: CheckoutSpec, request: &Request) -> Result<Operation
         }
     };
 
-    let target_url = spec
-        .target_https_url
-        .as_deref()
-        .or(spec.target_ssh_url.as_deref());
+    let target_url = checkout_upstream(&spec, &source_url);
     if target_url.is_some_and(|target_url| target_url != source_url) {
         run_git([
             "-C",
@@ -176,7 +173,7 @@ pub async fn current_repository() -> Result<CurrentRepository> {
                 .collect::<Vec<_>>()
                 .join(", ");
             Error::invalid(format!(
-                "cannot infer a Launchpad repository in {}; inspected remotes: {}; accepted syntax: lp:<project>, lp://~owner/project/+git/repository, or a git.launchpad.net URL; retry with repository and branch or a full merge proposal target",
+                "cannot infer a Launchpad repository in {}; inspected remotes: {}; accepted syntax: lp:<project>, lp://~owner/project/+git/repository, or a Git URL for the selected Launchpad instance; retry with repository and branch or a full merge proposal target",
                 working_directory.display(),
                 if inspected.is_empty() { "none" } else { &inspected }
             ))
@@ -260,6 +257,24 @@ pub async fn push(request: &Request) -> Result<OperationResult> {
     Ok(OperationResult::new(text).with_details(details))
 }
 
+fn checkout_upstream<'spec>(spec: &'spec CheckoutSpec, source_url: &str) -> Option<&'spec str> {
+    let same_repository = (spec.source_https_url.is_some()
+        && spec.source_https_url == spec.target_https_url)
+        || (spec.source_ssh_url.is_some() && spec.source_ssh_url == spec.target_ssh_url);
+    if same_repository {
+        return None;
+    }
+    if spec.source_ssh_url.as_deref() == Some(source_url) {
+        spec.target_ssh_url
+            .as_deref()
+            .or(spec.target_https_url.as_deref())
+    } else {
+        spec.target_https_url
+            .as_deref()
+            .or(spec.target_ssh_url.as_deref())
+    }
+}
+
 fn checkout_destination(spec: &CheckoutSpec, request: &Request) -> Result<PathBuf> {
     let destination = if let Some(directory) = request.directory.as_deref() {
         PathBuf::from(directory)
@@ -300,13 +315,21 @@ async fn clone_repository(source_url: &str, branch: &str, destination: &Path) ->
     Ok(())
 }
 
-async fn run_git<'argument>(
+pub(crate) async fn run_git<'argument>(
     arguments: impl IntoIterator<Item = &'argument str>,
 ) -> Result<std::process::Output> {
     let mut command = Command::new("git");
     command
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // Commands operate on their explicit -C directory (or the actual cwd),
+        // never a repository injected by the calling hook's environment.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -347,26 +370,29 @@ fn path_text(path: &Path) -> Result<&str> {
         .ok_or_else(|| Error::invalid(format!("path is not valid UTF-8: {}", path.display())))
 }
 
-fn validate_launchpad_remote(remote: &str) -> Result<()> {
-    let raw = if let Some(path) = remote.strip_prefix("git@git.launchpad.net:") {
-        format!("ssh://git@git.launchpad.net/{path}")
+pub(crate) fn validate_launchpad_remote(remote: &str) -> Result<()> {
+    validate_remote_host(remote, crate::auth::git_host()?)?;
+    Ok(())
+}
+
+fn validate_remote_host(remote: &str, expected_host: &str) -> Result<()> {
+    let prefix = format!("git@{expected_host}:");
+    let raw = if let Some(path) = remote.strip_prefix(&prefix) {
+        format!("ssh://git@{expected_host}/{path}")
     } else {
         remote.to_owned()
     };
     let url =
         Url::parse(&raw).map_err(|_| Error::invalid("Git remote must be a Launchpad Git URL"))?;
     if !matches!(url.scheme(), "https" | "ssh" | "git+ssh")
-        || !matches!(
-            url.host_str(),
-            Some("git.launchpad.net" | "git.staging.launchpad.net" | "git.qastaging.launchpad.net")
-        )
+        || url.host_str() != Some(expected_host)
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
         || url.path().trim_matches('/').is_empty()
     {
         return Err(Error::invalid(
-            "refusing a Git remote outside Launchpad Git hosting",
+            "refusing a Git remote outside the selected Launchpad instance",
         ));
     }
     Ok(())
@@ -377,13 +403,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn upstream_uses_the_working_transport_and_omits_the_same_repository() {
+        let mut spec = CheckoutSpec {
+            id: "42".to_owned(),
+            source_ref: "refs/heads/feature".to_owned(),
+            source_repository: "source".to_owned(),
+            source_https_url: Some("https://git.launchpad.test/source".to_owned()),
+            source_ssh_url: Some("git+ssh://git.launchpad.test/source".to_owned()),
+            target_https_url: Some("https://git.launchpad.test/target".to_owned()),
+            target_ssh_url: Some("git+ssh://git.launchpad.test/target".to_owned()),
+            web_link: None,
+        };
+        assert_eq!(
+            checkout_upstream(&spec, spec.source_ssh_url.as_deref().unwrap()),
+            spec.target_ssh_url.as_deref()
+        );
+        assert_eq!(
+            checkout_upstream(&spec, spec.source_https_url.as_deref().unwrap()),
+            spec.target_https_url.as_deref()
+        );
+        spec.target_https_url = spec.source_https_url.clone();
+        spec.target_ssh_url = spec.source_ssh_url.clone();
+        assert_eq!(
+            checkout_upstream(&spec, spec.source_ssh_url.as_deref().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn development_git_operations_cannot_push_to_production() {
+        validate_remote_host(
+            "git+ssh://cli@git.launchpad.test/~cli/project/+git/repo",
+            "git.launchpad.test",
+        )
+        .unwrap();
+        validate_remote_host("git@git.launchpad.test:project", "git.launchpad.test").unwrap();
+        assert!(
+            validate_remote_host("https://git.launchpad.net/project", "git.launchpad.test")
+                .is_err()
+        );
+        assert!(
+            validate_remote_host("https://git.launchpad.test/project", "git.launchpad.net")
+                .is_err()
+        );
+        assert!(
+            validate_remote_host(
+                "https://git.launchpad.test.evil.example/project",
+                "git.launchpad.test"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn git_operations_stay_on_launchpad() {
         for remote in [
             "https://git.launchpad.net/launchpad",
             "git+ssh://user@git.launchpad.net/~owner/project/+git/repo",
             "git@git.launchpad.net:launchpad",
         ] {
-            validate_launchpad_remote(remote).unwrap();
+            validate_remote_host(remote, "git.launchpad.net").unwrap();
         }
         for remote in [
             "https://github.com/owner/repo",
@@ -391,7 +470,7 @@ mod tests {
             "file:///tmp/repo",
             "ext::arbitrary-command",
         ] {
-            assert!(validate_launchpad_remote(remote).is_err());
+            assert!(validate_remote_host(remote, "git.launchpad.net").is_err());
         }
     }
 }

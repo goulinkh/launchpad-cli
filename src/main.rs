@@ -5,7 +5,7 @@ mod client;
 mod commands;
 mod diff;
 mod error;
-mod generated;
+mod git_file;
 mod launchpad;
 mod local_git;
 mod render;
@@ -68,7 +68,7 @@ async fn run(matches: &ArgMatches) -> Result<Value> {
     match group {
         "schema" => Ok(cli::catalog()),
         "auth" => run_auth(arguments, dry_run).await,
-        "api" => run_api(arguments, dry_run, yes).await,
+        "api" => api::run(arguments, dry_run, yes).await,
         "tool" => {
             let input = cli::read_input(
                 arguments
@@ -94,6 +94,7 @@ async fn run(matches: &ArgMatches) -> Result<Value> {
 
 async fn execute(request: Request, dry_run: bool, yes: bool) -> Result<Value> {
     request.validate()?;
+    request.op.check_supported()?;
     let operation =
         serde_json::to_value(request.op).map_err(|source| Error::invalid(source.to_string()))?;
     let spec = COMMANDS
@@ -165,69 +166,6 @@ async fn run_auth(arguments: &ArgMatches, dry_run: bool) -> Result<Value> {
     }
 }
 
-async fn run_api(arguments: &ArgMatches, dry_run: bool, yes: bool) -> Result<Value> {
-    let (action, arguments) = arguments
-        .subcommand()
-        .ok_or_else(|| Error::invalid("API action is required"))?;
-    let specification = api::specification()?;
-    match action {
-        "schema" => {
-            if let Some(component) = arguments.get_one::<String>("component") {
-                specification["components"]["schemas"]
-                    .get(component)
-                    .cloned()
-                    .ok_or_else(|| Error::invalid("unknown component schema"))
-            } else {
-                Ok(specification)
-            }
-        }
-        "operations" => {
-            let filter = arguments.get_one::<String>("filter");
-            let operations: Vec<_> = api::operations(&specification)
-                .into_iter()
-                .filter(|operation| {
-                    filter.is_none_or(|filter| {
-                        operation.operation_id.contains(filter) || operation.path.contains(filter)
-                    })
-                })
-                .collect();
-            Ok(
-                json!({ "operations": operations, "route_coverage": specification["x-launchpad-route-coverage"] }),
-            )
-        }
-        "decode" => {
-            let component = arguments
-                .get_one::<String>("component")
-                .ok_or_else(|| Error::invalid("component is required"))?;
-            let value = cli::read_input(
-                arguments
-                    .get_one::<String>("input")
-                    .ok_or_else(|| Error::invalid("input is required"))?,
-            )?;
-            generated::validate_component(component, value.clone())
-                .map_err(|source| Error::invalid(source.to_string()))?;
-            Ok(value)
-        }
-        "call" => {
-            let id = arguments
-                .get_one::<String>("operation")
-                .ok_or_else(|| Error::invalid("operation ID is required"))?;
-            let operations = api::operations(&specification);
-            let mut candidates = operations
-                .iter()
-                .filter(|operation| operation.operation_id == *id);
-            let operation = candidates.next().ok_or_else(|| {
-                Error::invalid("unknown converter operation ID; use api operations")
-            })?;
-            if candidates.next().is_some() {
-                return Err(Error::invalid("converter operation ID is ambiguous"));
-            }
-            api::call(operation, cli::input_object(arguments)?, dry_run, yes).await
-        }
-        _ => Err(Error::invalid("unknown API action")),
-    }
-}
-
 fn emit(data: &Value, json_output: bool) -> Result<()> {
     let output = if json_output {
         serde_json::to_string(&json!({ "schema_version": 1, "ok": true, "data": data }))
@@ -246,7 +184,10 @@ fn emit(data: &Value, json_output: bool) -> Result<()> {
 
 fn emit_error(error: &Error, json_output: bool) {
     if json_output {
-        let failure = json!({ "schema_version": 1, "ok": false, "error": { "code": error.stable_code(), "message": error.bridge_message() } });
+        let mut failure = json!({ "schema_version": 1, "ok": false, "error": { "code": error.stable_code(), "message": error.bridge_message() } });
+        if let Some(details) = error.details() {
+            failure["error"]["details"] = details;
+        }
         // A failed output pipe must not cause a panic or contaminate stderr with JSON.
         let _ = writeln!(io::stdout().lock(), "{failure}");
     } else {

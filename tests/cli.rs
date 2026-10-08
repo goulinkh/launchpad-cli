@@ -11,6 +11,7 @@ fn run(arguments: &[&str], input: Option<&str>) -> Output {
     command
         .args(arguments)
         .env("LAUNCHPAD_CLI_ANONYMOUS", "1")
+        .env("LAUNCHPAD_CLI_API_BASE", "http://127.0.0.1:1/devel")
         .env(
             "LAUNCHPAD_CLI_CREDENTIALS",
             directory.path().join("missing.json"),
@@ -37,6 +38,178 @@ fn document(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn unsupported_resubmission_fails_offline_including_dry_runs() {
+    for flag in ["--json", "--yes", "--dry-run"] {
+        let output = run(
+            &[
+                "merge-proposal",
+                "replace-prerequisite",
+                "42",
+                "--merge-prerequisite",
+                "base",
+                flag,
+            ],
+            None,
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(document(&output)["error"]["code"], "unsupported_operation");
+        assert!(
+            document(&output)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("No requests were sent")
+        );
+    }
+    let output = run(
+        &["tool", "--yes", "--input", "-"],
+        Some(
+            r#"{"op":"replace_merge_proposal_prerequisite","target":"42","merge_prerequisite":"base"}"#,
+        ),
+    );
+    assert_eq!(document(&output)["error"]["code"], "unsupported_operation");
+    let output = run(
+        &["tool", "--dry-run", "--input", "-"],
+        Some(r#"{"op":"set_merge_proposal_status","target":"42","status":"Superseded"}"#),
+    );
+    assert_eq!(document(&output)["error"]["code"], "unsupported_operation");
+    let output = run(&["schema"], None);
+    assert_eq!(
+        document(&output)["data"]["unsupported_operations"],
+        json!(["replace_merge_proposal_prerequisite"])
+    );
+}
+
+#[test]
+fn ssh_file_reads_are_explicit_and_validate_offline() {
+    let output = run(
+        &[
+            "repository",
+            "file",
+            "project",
+            "--path",
+            "README",
+            "--transport",
+            "ssh",
+            "--branch",
+            "main",
+            "--dry-run",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(document(&output)["data"]["request"]["transport"], "ssh");
+    assert_eq!(document(&output)["data"]["executed"], false);
+    for input in [
+        json!({"op":"file_read", "repository":"project", "path":"README", "transport":"ftp"}),
+        json!({"op":"file_read", "repository":"project", "path":"../secret", "transport":"ssh"}),
+        json!({"op":"file_read", "repository":"project", "path":"README", "transport":"ssh", "branch":"--upload-pack=evil"}),
+        json!({"op":"file_read", "repository":"project", "path":"README", "transport":"ssh", "branch":" "}),
+        json!({"op":"file_read", "repository":"project", "path":"bad\0path", "transport":"ssh"}),
+        json!({"op":"repo_view", "repository":"project", "transport":"ssh"}),
+    ] {
+        let output = run(
+            &["tool", "--input", "-", "--dry-run"],
+            Some(&input.to_string()),
+        );
+        assert_eq!(output.status.code(), Some(2), "{input}");
+        assert_eq!(document(&output)["error"]["code"], "invalid_request");
+    }
+}
+
+#[test]
+fn development_instance_uses_test_endpoints_without_credentials() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_launchpad-cli"))
+        .args([
+            "api",
+            "call",
+            "bug-get",
+            "--input",
+            "-",
+            "--dry-run",
+            "--json",
+        ])
+        .env("LAUNCHPAD_CLI_INSTANCE", "development")
+        .env_remove("LAUNCHPAD_CLI_API_BASE")
+        .env(
+            "LAUNCHPAD_CLI_CREDENTIALS",
+            directory.path().join("absent.json"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"params":{"id":"16"}}"#)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        document(&output)["data"]["url"],
+        "https://api.launchpad.test/devel/bugs/16"
+    );
+    assert_eq!(document(&output)["data"]["executed"], false);
+}
+
+#[test]
+fn repository_decode_preserves_nullable_live_fields_and_rejects_wrong_types() {
+    let fixture = include_str!("fixtures/git-repository.json");
+    let original: Value = serde_json::from_str(fixture).unwrap();
+    let arguments = ["api", "decode", "git_repository-full", "--input", "-"];
+    let output = run(&arguments, Some(fixture));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(document(&output)["data"], original);
+
+    for count in [
+        json!(null),
+        json!(12),
+        json!("tag:launchpad.net:2008:redacted"),
+    ] {
+        let mut input = original.clone();
+        input["pack_count"] = count;
+        input["date_last_scanned"] = Value::Null;
+        let output = run(&arguments, Some(&input.to_string()));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(document(&output)["data"], input);
+    }
+    for (field, value) in [
+        ("date_last_repacked", json!(false)),
+        ("pack_count", json!("twelve")),
+    ] {
+        let mut input = original.clone();
+        input[field] = value;
+        let output = run(&arguments, Some(&input.to_string()));
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(
+            document(&output)["error"]["details"]["instance_path"],
+            format!("/{field}")
+        );
+    }
+    let mut input = original;
+    input.as_object_mut().unwrap().remove("date_last_repacked");
+    assert_eq!(
+        run(&arguments, Some(&input.to_string())).status.code(),
+        Some(2)
+    );
 }
 
 #[test]
@@ -154,7 +327,7 @@ fn api_templates_keep_fixed_ws_op_and_parameter_encoding() {
 }
 
 #[test]
-fn generated_types_enforce_declared_requiredness() {
+fn component_schemas_enforce_declared_requiredness() {
     let output = run(
         &["api", "decode", "git_ref-page", "--input", "-"],
         Some(r#"{"start":0,"entries":[]}"#),
@@ -165,6 +338,98 @@ fn generated_types_enforce_declared_requiredness() {
         Some(r#"{"entries":[]}"#),
     );
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn agents_can_discover_one_operation_without_the_entire_contract() {
+    let output = run(
+        &[
+            "api",
+            "operations",
+            "--compact",
+            "--filter",
+            "git_repositories-getByPath",
+        ],
+        None,
+    );
+    assert!(output.status.success());
+    let listing = document(&output);
+    let operations = listing["data"]["operations"].as_array().unwrap();
+    assert_eq!(operations.len(), 1);
+    assert!(operations[0].get("definition").is_none());
+    assert_eq!(operations[0]["effect"], "read");
+
+    let output = run(&["api", "describe", "git_repositories-getByPath"], None);
+    assert!(output.status.success());
+    assert!(
+        output.stdout.len() < 10_000,
+        "description must remain focused"
+    );
+    let description = document(&output);
+    assert_eq!(description["data"]["requires_yes"], false);
+    assert!(description["data"]["unsupported_reason"].is_null());
+    let validator = jsonschema::validator_for(&description["data"]["input_schema"]).unwrap();
+    assert!(validator.is_valid(&json!({ "params": { "path": "launchpad" } })));
+    assert!(!validator.is_valid(&json!({ "params": { "path": 42 } })));
+}
+
+#[test]
+fn api_validation_errors_have_machine_readable_paths() {
+    let output = run(
+        &[
+            "api",
+            "call",
+            "git_repositories-getByPath",
+            "--input",
+            "-",
+            "--dry-run",
+        ],
+        Some(r#"{"params":{"path":42}}"#),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let error = document(&output);
+    assert_eq!(error["error"]["code"], "invalid_request");
+    assert_eq!(error["error"]["details"]["instance_path"], "/params/path");
+    assert!(
+        error["error"]["details"]["schema_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/type")
+    );
+}
+
+#[test]
+fn api_writes_require_consent_after_offline_validation() {
+    let input = r#"{"params":{"id":"1"},"body":{"title":"Updated"}}"#;
+    let arguments = ["api", "call", "bug-patch", "--input", "-"];
+    let output = run(&arguments, Some(input));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        document(&output)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--yes")
+    );
+
+    let mut arguments = arguments.to_vec();
+    arguments.push("--dry-run");
+    let output = run(&arguments, Some(input));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(document(&output)["data"]["effect"], "remote-write");
+    assert_eq!(document(&output)["data"]["executed"], false);
+    assert_eq!(
+        document(&output)["data"]["content_type"],
+        "application/json"
+    );
+
+    arguments.pop();
+    arguments.push("--yes");
+    let output = run(&arguments, Some(input));
+    assert_eq!(output.status.code(), Some(3));
 }
 
 #[test]

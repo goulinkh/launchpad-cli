@@ -1,4 +1,6 @@
 /target/
+/dist/
 /node_modules/
 /openapi/launchpad.json
+/.development-instance.local.md
 *.tmp
