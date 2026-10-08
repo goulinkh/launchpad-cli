@@ -18,7 +18,7 @@ async function fixture(run) {
 
 async function manifests(root, version = '1.2.3') {
   await writeFile(join(root, 'Cargo.toml'), `[package]\nname = "launchpad-cli"\nversion = "${version}"\n\n[dependencies]\nserde = "1"\n`);
-  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@goulinkh/launchpad-cli', version }));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@goulin/launchpad-cli', version }));
 }
 
 test('release tags must match both manifests', () => {

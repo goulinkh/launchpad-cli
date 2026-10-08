@@ -14,7 +14,7 @@ function main() {
   }
   const child = spawnSync(executable, process.argv.slice(2), { stdio: 'inherit' });
   if (child.error) {
-    console.error(`cannot run bundled launchpad-cli: ${child.error.message}; reinstall @goulinkh/launchpad-cli`);
+    console.error(`cannot run bundled launchpad-cli: ${child.error.message}; reinstall @goulin/launchpad-cli`);
     return 1;
   }
   if (child.signal) {

@@ -19,7 +19,7 @@ Launchpad concepts. There are no `issue` or `pr` aliases.
 Install from npm with Node.js 24 or newer:
 
 ```sh
-npm install --global @goulinkh/launchpad-cli
+npm install --global @goulin/launchpad-cli
 launchpad-cli --version
 lpci --version
 ```

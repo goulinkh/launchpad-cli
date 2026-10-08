@@ -89,9 +89,9 @@ test('npm packaging enforces the scoped name and rejects runtime dependencies', 
   await binaries(root);
   const path = join(root, 'package.json');
   const manifest = JSON.parse(await readFile(path, 'utf8'));
-  for (const change of [{ name: 'launchpad-cli' }, { private: true }]) {
+  for (const change of [{ name: 'launchpad-cli' }, { name: '@goulinkh/launchpad-cli' }, { private: true }]) {
     await writeFile(path, JSON.stringify({ ...manifest, ...change }));
-    await assert.rejects(checkNpmPackage(root), /publishable as @goulinkh\/launchpad-cli/);
+    await assert.rejects(checkNpmPackage(root), /publishable as @goulin\/launchpad-cli/);
   }
   for (const change of [{ dependencies: { secret: '*' } }, { optionalDependencies: { secret: '*' } }]) {
     await writeFile(path, JSON.stringify({ ...manifest, ...change }));
@@ -120,7 +120,7 @@ test('npm launcher reports missing binaries without mixing diagnostics into stdo
   const result = spawnSync(process.execPath, [join(root, 'npm', 'cli.mjs'), '--version'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /reinstall @goulinkh\/launchpad-cli/);
+  assert.match(result.stderr, /reinstall @goulin\/launchpad-cli/);
 });
 
 test('npm launcher preserves native termination signals', { skip: process.platform === 'win32' }, async t => {
@@ -151,7 +151,7 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   ].sort();
   assert.deepEqual(names, expected);
   const manifest = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }));
-  assert.equal(manifest.name, '@goulinkh/launchpad-cli');
+  assert.equal(manifest.name, '@goulin/launchpad-cli');
   assert.equal(manifest.version, '1.2.3');
   assert.deepEqual(manifest.bin, { 'launchpad-cli': 'npm/cli.mjs', lpci: 'npm/cli.mjs' });
   assert.equal(manifest.publishConfig.access, 'public');
@@ -160,7 +160,7 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   assert.equal(manifest.scripts, undefined);
   const install = join(root, 'install');
   npm(['install', '--prefix', install, '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--package-lock=false', archive], root);
-  const packageRoot = join(install, 'node_modules', '@goulinkh', 'launchpad-cli');
+  const packageRoot = join(install, 'node_modules', '@goulin', 'launchpad-cli');
   assert.equal((await lstat(join(packageRoot, 'bin', binaryName()))).mode & 0o111, 0o111);
   for (const command of ['launchpad-cli', 'lpci']) {
     const launcher = join(install, 'node_modules', '.bin', command);

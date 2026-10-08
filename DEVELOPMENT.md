@@ -112,7 +112,7 @@ Three workflows are included:
 - `.github/workflows/security.yml` checks Actions security with zizmor without
   requiring paid GitHub Advanced Security features for a private repository.
 - `.github/workflows/release.yml` verifies `v*` tags, builds and smoke-tests
-  native binaries, assembles `@goulinkh/launchpad-cli`, and publishes a GitHub
+  native binaries, assembles `@goulin/launchpad-cli`, and publishes a GitHub
   release only after every build passes. npm registry publishing is a separate,
   authenticated local step.
 
@@ -149,11 +149,11 @@ To publish the current version after committing the source:
 ```sh
 npm run check
 npm test
-node scripts/release-metadata.mjs v0.1.1
+node scripts/release-metadata.mjs v0.1.2
 # No release is created until the tag is pushed:
-git tag -a v0.1.1 -m 'launchpad-cli v0.1.1'
+git tag -a v0.1.2 -m 'launchpad-cli v0.1.2'
 git push origin main
-git push origin v0.1.1
+git push origin v0.1.2
 ```
 
 For later releases, update the `[package]` version in `Cargo.toml` and the
@@ -186,26 +186,28 @@ npm run release:npm
 npm run release:checksums
 ```
 
-`release:npm` produces `dist/goulinkh-launchpad-cli-<version>.tgz`. The assembler
+`release:npm` produces `dist/goulin-launchpad-cli-<version>.tgz`. The assembler
 requires all six nonempty, regular binaries, normalises executable permissions,
 and packs a temporary allowlisted tree without development dependencies or
 scripts. Corresponding Rust source, lockfile, toolchain and embedded contract
 build inputs are included for GPL compliance while the source repository is
 private; npm installation never compiles them. The source checkout's `prepack`
 guard also refuses incomplete binary sets, preventing an accidental source-only
-publication. Tests install a fixture
-tarball offline with lifecycle scripts disabled and exercise the launcher.
+publication. Tests install a fixture tarball offline with lifecycle scripts
+disabled and exercise the launcher.
 No Rust compilation, Cargo fallback, install-time download, or Launchpad access
 is used by npm consumers.
 
 ### First npm publication
 
 The `v0.1.0` build failed at Windows ZIP packaging before publishing any release.
-That tag is retained unchanged; the corrected first-release candidate is `v0.1.1`.
+The `v0.1.1` tag still used the unavailable `@goulinkh` npm scope. Both tags remain
+unchanged; the first npm release uses `v0.1.2` and **`@goulin/launchpad-cli`**.
 
-The npm scope is independent of GitHub. You must control the npm account or
-organisation **`goulinkh`**, and the logged-in npm user must have publish rights
-there. The unscoped `launchpad-cli` name belongs to another project; do not use it.
+The npm scope is independent of GitHub. Authenticate as the npm user **`goulin`**
+to publish in that personal namespace; the repository remains under GitHub's
+`goulinkh` account. The unscoped `launchpad-cli` name belongs to another project;
+do not use it.
 npm installs both `launchpad-cli` and the shorter alias `lpci`, backed by the
 same launcher and native binary.
 
@@ -213,13 +215,13 @@ After committing and tagging the source as above, wait for the release workflow
 to finish. Download its already-built npm tarball and checksum manifest:
 
 ```sh
-gh release download v0.1.1 --repo goulinkh/launchpad-cli --dir dist \
-  --pattern 'goulinkh-launchpad-cli-0.1.1.tgz' --pattern SHA256SUMS
-(cd dist && grep '  goulinkh-launchpad-cli-0.1.1.tgz$' SHA256SUMS | shasum -a 256 --check)
+gh release download v0.1.2 --repo goulinkh/launchpad-cli --dir dist \
+  --pattern 'goulin-launchpad-cli-0.1.2.tgz' --pattern SHA256SUMS
+(cd dist && grep '  goulin-launchpad-cli-0.1.2.tgz$' SHA256SUMS | shasum -a 256 --check)
 npm login
 npm whoami
-npm publish ./dist/goulinkh-launchpad-cli-0.1.1.tgz --access public --tag latest
-npm view @goulinkh/launchpad-cli version
+npm publish ./dist/goulin-launchpad-cli-0.1.2.tgz --access public --tag latest
+npm view @goulin/launchpad-cli version
 ```
 
 Follow npm's interactive authentication and two-factor prompts; never commit

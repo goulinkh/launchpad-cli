@@ -33,7 +33,7 @@ export async function metadataFromFiles(tag, root = process.cwd()) {
 }
 
 export function npmAssetName(version) {
-  return `goulinkh-launchpad-cli-${version}.tgz`;
+  return `goulin-launchpad-cli-${version}.tgz`;
 }
 
 export function assetName(version, target) {

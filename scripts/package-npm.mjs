@@ -16,8 +16,8 @@ const PACKAGE_FILES = [
 export async function checkNpmPackage(root = process.cwd()) {
   const { version } = await metadataFromFiles(process.env.RELEASE_TAG, root);
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  if (manifest.name !== '@goulinkh/launchpad-cli' || manifest.private) {
-    throw new Error('npm package must be publishable as @goulinkh/launchpad-cli');
+  if (manifest.name !== '@goulin/launchpad-cli' || manifest.private) {
+    throw new Error('npm package must be publishable as @goulin/launchpad-cli');
   }
   if (Object.keys(manifest.dependencies ?? {}).length || Object.keys(manifest.optionalDependencies ?? {}).length) {
     throw new Error('npm package must not require runtime dependencies');
