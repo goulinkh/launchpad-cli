@@ -2,7 +2,7 @@
 
 A standalone Rust CLI for Launchpad, with copied and adapted operations from
 [`omp-launchpad`](https://github.com/goulinkh/omp-launchpad). The native executable
-imports neither that project nor `lpcli`, and needs no OMP, Bun, Node.js, or
+imports neither that project nor the `lpcli` library, and needs no OMP, Bun, Node.js, or
 Python at runtime. npm installations use a small Node.js launcher.
 Its own HTTP client implements Launchpad OAuth, JSON PATCH, repeated form
 parameters, created-resource locations, and checked hypermedia links.
@@ -21,13 +21,15 @@ Install from npm with Node.js 24 or newer:
 ```sh
 npm install --global @goulin/launchpad-cli
 launchpad-cli --version
-lpci --version
+lp --version
+lpcli --version
 ```
 
-The scoped package provides **`launchpad-cli`** and its shorter alias **`lpci`**,
-and bundles native binaries for Linux (musl), macOS, and Windows on x64 and arm64. It does not build
-Rust or download binaries during installation, and works with install scripts
-disabled. Unsupported platforms fail explicitly.
+The scoped package provides **`launchpad-cli`** and its shorter aliases **`lp`**
+and **`lpcli`**. From version 0.1.3, these replace the misspelled `lpci` alias.
+It bundles native binaries for Linux (musl), macOS, and Windows on x64 and arm64.
+It does not build Rust or download binaries during installation, and works with
+install scripts disabled. Unsupported platforms fail explicitly.
 
 Alternatively, Rust 1.88 or newer is required to build from source:
 

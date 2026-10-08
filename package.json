@@ -1,6 +1,6 @@
 {
   "name": "@goulin/launchpad-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Standalone, agent-friendly Rust CLI for Launchpad",
   "type": "module",
   "license": "GPL-3.0-or-later",
@@ -14,7 +14,8 @@
   },
   "bin": {
     "launchpad-cli": "npm/cli.mjs",
-    "lpci": "npm/cli.mjs"
+    "lp": "npm/cli.mjs",
+    "lpcli": "npm/cli.mjs"
   },
   "files": [
     "npm/cli.mjs",

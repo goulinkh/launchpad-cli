@@ -3,7 +3,8 @@
 Run from this directory. Rust 1.88+ builds the standalone binary; Node.js 24+
 is needed for the npm launcher, converter updates, provenance checks, and
 release packaging. Direct native binaries do not require Node.js.
-No OMP, parent crate, `lpcli`, or parent `node_modules` is required.
+No OMP, parent crate, external `lpcli` installation, or parent `node_modules`
+is required.
 
 ```sh
 npm ci
@@ -149,11 +150,11 @@ To publish the current version after committing the source:
 ```sh
 npm run check
 npm test
-node scripts/release-metadata.mjs v0.1.2
+node scripts/release-metadata.mjs v0.1.3
 # No release is created until the tag is pushed:
-git tag -a v0.1.2 -m 'launchpad-cli v0.1.2'
+git tag -a v0.1.3 -m 'launchpad-cli v0.1.3'
 git push origin main
-git push origin v0.1.2
+git push origin v0.1.3
 ```
 
 For later releases, update the `[package]` version in `Cargo.toml` and the
@@ -208,19 +209,20 @@ The npm scope is independent of GitHub. Authenticate as the npm user **`goulin`*
 to publish in that personal namespace; the repository remains under GitHub's
 `goulinkh` account. The unscoped `launchpad-cli` name belongs to another project;
 do not use it.
-npm installs both `launchpad-cli` and the shorter alias `lpci`, backed by the
-same launcher and native binary.
+From 0.1.3, npm installs `launchpad-cli` and the aliases `lp` and `lpcli`, all
+backed by the same launcher and native binary. These replace the misspelled
+`lpci` alias from 0.1.2; automation using that name must switch to `lp` or `lpcli`.
 
-After committing and tagging the source as above, wait for the release workflow
-to finish. Download its already-built npm tarball and checksum manifest:
+After committing and tagging the current source as above, wait for the release
+workflow to finish. Download its already-built npm tarball and checksum manifest:
 
 ```sh
-gh release download v0.1.2 --repo goulinkh/launchpad-cli --dir dist \
-  --pattern 'goulin-launchpad-cli-0.1.2.tgz' --pattern SHA256SUMS
-(cd dist && grep '  goulin-launchpad-cli-0.1.2.tgz$' SHA256SUMS | shasum -a 256 --check)
+gh release download v0.1.3 --repo goulinkh/launchpad-cli --dir dist \
+  --pattern 'goulin-launchpad-cli-0.1.3.tgz' --pattern SHA256SUMS
+(cd dist && grep '  goulin-launchpad-cli-0.1.3.tgz$' SHA256SUMS | shasum -a 256 --check)
 npm login
 npm whoami
-npm publish ./dist/goulin-launchpad-cli-0.1.2.tgz --access public --tag latest
+npm publish ./dist/goulin-launchpad-cli-0.1.3.tgz --access public --tag latest
 npm view @goulin/launchpad-cli version
 ```
 

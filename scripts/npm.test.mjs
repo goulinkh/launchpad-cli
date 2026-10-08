@@ -153,7 +153,7 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   const manifest = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }));
   assert.equal(manifest.name, '@goulin/launchpad-cli');
   assert.equal(manifest.version, '1.2.3');
-  assert.deepEqual(manifest.bin, { 'launchpad-cli': 'npm/cli.mjs', lpci: 'npm/cli.mjs' });
+  assert.deepEqual(manifest.bin, { 'launchpad-cli': 'npm/cli.mjs', lp: 'npm/cli.mjs', lpcli: 'npm/cli.mjs' });
   assert.equal(manifest.publishConfig.access, 'public');
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.devDependencies, undefined);
@@ -162,7 +162,8 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   npm(['install', '--prefix', install, '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--package-lock=false', archive], root);
   const packageRoot = join(install, 'node_modules', '@goulin', 'launchpad-cli');
   assert.equal((await lstat(join(packageRoot, 'bin', binaryName()))).mode & 0o111, 0o111);
-  for (const command of ['launchpad-cli', 'lpci']) {
+  await assert.rejects(lstat(join(install, 'node_modules', '.bin', 'lpci')), { code: 'ENOENT' });
+  for (const command of ['launchpad-cli', 'lp', 'lpcli']) {
     const launcher = join(install, 'node_modules', '.bin', command);
     assert.equal(execFileSync(launcher, ['--version'], { encoding: 'utf8' }), 'launchpad-cli 1.2.3\n');
   }
