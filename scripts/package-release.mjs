@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { binaryName } from '../npm/platform.mjs';
 import { TARGETS, assetName, metadataFromFiles } from './release-metadata.mjs';
 
 export async function packageRelease(target, root = process.cwd()) {
@@ -43,6 +44,11 @@ export async function packageRelease(target, root = process.cwd()) {
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+  const binaryDirectory = join(root, 'bin');
+  await mkdir(binaryDirectory, { recursive: true });
+  const npmBinary = join(binaryDirectory, binaryName(platform.platform, platform.architecture));
+  await copyFile(source, npmBinary);
+  if (platform.platform !== 'win32') await chmod(npmBinary, 0o755);
   return archive;
 }
 

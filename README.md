@@ -1,8 +1,9 @@
 # launchpad-cli
 
 A standalone Rust CLI for Launchpad, with copied and adapted operations from
-[`omp-launchpad`](https://github.com/goulinkh/omp-launchpad). It imports neither
-that project nor `lpcli`, and needs no OMP, Bun, Node.js, or Python at runtime.
+[`omp-launchpad`](https://github.com/goulinkh/omp-launchpad). The native executable
+imports neither that project nor `lpcli`, and needs no OMP, Bun, Node.js, or
+Python at runtime. npm installations use a small Node.js launcher.
 Its own HTTP client implements Launchpad OAuth, JSON PATCH, repeated form
 parameters, created-resource locations, and checked hypermedia links.
 
@@ -15,7 +16,20 @@ Launchpad concepts. There are no `issue` or `pr` aliases.
 
 ## Install
 
-Rust 1.88 or newer is required to build:
+Install from npm with Node.js 24 or newer:
+
+```sh
+npm install --global @goulinkh/launchpad-cli
+launchpad-cli --version
+lpci --version
+```
+
+The scoped package provides **`launchpad-cli`** and its shorter alias **`lpci`**,
+and bundles native binaries for Linux (musl), macOS, and Windows on x64 and arm64. It does not build
+Rust or download binaries during installation, and works with install scripts
+disabled. Unsupported platforms fail explicitly.
+
+Alternatively, Rust 1.88 or newer is required to build from source:
 
 ```sh
 cd launchpad-cli
@@ -32,8 +46,11 @@ releases follows the repository's visibility; private releases require GitHub
 authentication. Node.js and Rust are not needed to run a downloaded binary.
 
 This directory is a self-contained project. Move or copy it elsewhere without
-its parent checkout. `package.json` is a private, **development-only** package
-for OpenAPI snapshot updates and release tooling, not a JavaScript CLI wrapper.
+its parent checkout. The npm release contains the launcher, native binaries,
+notices and licences, plus corresponding Rust source and build inputs for GPL
+compliance. Converter tooling and local credentials are excluded; installation
+never compiles the included source. Direct native archives remain available
+without Node.js.
 
 ## Quick start
 

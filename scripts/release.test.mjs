@@ -8,7 +8,8 @@ import test from 'node:test';
 
 import { packageRelease } from './package-release.mjs';
 import { releaseChecksums } from './release-checksums.mjs';
-import { TARGETS, assetName, metadataFromFiles, releaseMetadata } from './release-metadata.mjs';
+import { binaryName } from '../npm/platform.mjs';
+import { TARGETS, assetName, metadataFromFiles, npmAssetName, releaseMetadata } from './release-metadata.mjs';
 
 async function fixture(run) {
   const root = await mkdtemp(join(tmpdir(), 'launchpad-cli-release-test-'));
@@ -17,7 +18,7 @@ async function fixture(run) {
 
 async function manifests(root, version = '1.2.3') {
   await writeFile(join(root, 'Cargo.toml'), `[package]\nname = "launchpad-cli"\nversion = "${version}"\n\n[dependencies]\nserde = "1"\n`);
-  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'launchpad-cli', version, private: true }));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@goulinkh/launchpad-cli', version }));
 }
 
 test('release tags must match both manifests', () => {
@@ -50,12 +51,12 @@ test('release target mapping contains exactly six unique native archives', () =>
 
 test('checksums require every target and reject unexpected artifacts', async () => {
   await fixture(async root => {
-    const names = Object.keys(TARGETS).map(target => assetName('1.2.3', target));
+    const names = [...Object.keys(TARGETS).map(target => assetName('1.2.3', target)), npmAssetName('1.2.3')];
     for (const name of names) await writeFile(join(root, name), `fixture for ${name}`);
     const checksums = await releaseChecksums('1.2.3', root);
     const hash = createHash('sha256').update(await readFile(join(root, names[0]))).digest('hex');
     assert.ok(checksums.includes(`${hash}  ${names[0]}\n`));
-    assert.equal(checksums.trim().split('\n').length, 6);
+    assert.equal(checksums.trim().split('\n').length, 7);
     assert.equal(await readFile(join(root, 'SHA256SUMS'), 'utf8'), checksums);
     await writeFile(join(root, 'unexpected.tgz'), 'not a native release');
     await assert.rejects(releaseChecksums('1.2.3', root), /exactly one archive/);
@@ -68,6 +69,7 @@ test('checksums require every target and reject unexpected artifacts', async () 
 test('empty archives cannot be published', async () => {
   await fixture(async root => {
     for (const target of Object.keys(TARGETS)) await writeFile(join(root, assetName('1.2.3', target)), '');
+    await writeFile(join(root, npmAssetName('1.2.3')), 'fixture npm package');
     await assert.rejects(releaseChecksums('1.2.3', root), /empty release asset/);
   });
 });
@@ -90,6 +92,7 @@ test('native packaging smoke-tests the executable and includes licences', { skip
     assert.match(files, /\/launchpad-cli\n/);
     assert.match(files, /\/LICENSE\n/);
     assert.match(files, /\/openapi\/CONVERTER-LICENSE\n/);
+    assert.equal(await readFile(join(root, 'bin', binaryName()), 'utf8'), await readFile(binary, 'utf8'));
     await writeFile(binary, '#!/usr/bin/env node\nconsole.log("launchpad-cli 0.0.0");\n');
     await assert.rejects(packageRelease(target, root), /unexpected binary version/);
   });

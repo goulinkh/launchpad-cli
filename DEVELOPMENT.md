@@ -1,7 +1,8 @@
 # Development
 
 Run from this directory. Rust 1.88+ builds the standalone binary; Node.js 24+
-is needed only for converter updates, provenance checks, and release packaging.
+is needed for the npm launcher, converter updates, provenance checks, and
+release packaging. Direct native binaries do not require Node.js.
 No OMP, parent crate, `lpcli`, or parent `node_modules` is required.
 
 ```sh
@@ -103,7 +104,7 @@ are allowed; OAuth is never sent over HTTP. Git workflows use actual Git and
 require `--yes`; their remotes must match the selected instance. Tests must use
 disposable directories and must not push to a production branch. `--dry-run` is entirely offline.
 
-## GitHub publishing
+## GitHub and npm publishing
 
 Three workflows are included:
 
@@ -111,11 +112,14 @@ Three workflows are included:
 - `.github/workflows/security.yml` checks Actions security with zizmor without
   requiring paid GitHub Advanced Security features for a private repository.
 - `.github/workflows/release.yml` verifies `v*` tags, builds and smoke-tests
-  native binaries, and publishes a GitHub release only after every build passes.
+  native binaries, assembles `@goulinkh/launchpad-cli`, and publishes a GitHub
+  release only after every build passes. npm registry publishing is a separate,
+  authenticated local step.
 
-Publishing uses the workflow's built-in `GITHUB_TOKEN`; no personal access token,
-registry credentials, or extra secrets are required. Only the publishing job has
-`contents: write`. Actions are pinned to commit SHAs, checkout does not persist
+GitHub publishing uses the workflow's built-in `GITHUB_TOKEN`; no personal access
+token, registry credentials, or extra secrets are required for that workflow.
+Only the publishing job has `contents: write`. Actions are pinned to commit
+SHAs, checkout does not persist
 credentials, and tagged source passes the full test suite before packaging.
 Keep GitHub Actions enabled and ensure repository or organisation policies allow
 these pinned actions and the publishing job's write permission.
@@ -135,8 +139,9 @@ Each archive contains the executable, README, NOTICE, and applicable licence
 texts. Archives are named `launchpad-cli-<version>-<platform>-<architecture>`;
 platform values are `linux`, `darwin`, and `win32`. Packaging checks the binary's
 version and offline agent schema without contacting Launchpad. The publish job
-requires exactly six nonempty archives and attaches `SHA256SUMS`. Linux builds
-use musl to avoid a host glibc dependency. Hosted runner availability and private
+requires exactly six nonempty native archives plus the universal npm tarball,
+and attaches `SHA256SUMS` for all seven files. Linux builds use musl to avoid
+a host glibc dependency. Hosted runner availability and private
 repository Actions usage depend on the account's GitHub plan and policies.
 
 To publish the current version after committing the source:
@@ -168,11 +173,56 @@ npm run release:package -- aarch64-apple-darwin
 ```
 
 Packaging must run on the binary's matching OS and architecture so the smoke
-test actually executes it. Output goes to ignored `dist/`. After collecting all
-six archives, `npm run release:checksums` generates the same checksum manifest
-as CI. `package.json` remains private and development-only; this workflow does
-not publish to npm, crates.io, or a container registry. GitHub Releases inherit
-the repository visibility (currently private).
+test actually executes it. Native archives go to ignored `dist/`; each verified
+executable is also staged under ignored `bin/` with a platform-specific name.
+The matrix uploads both, and the publishing job combines all six builds.
+
+After collecting the current version's six verified binaries in `bin/`, run:
+
+```sh
+npm run release:npm
+npm run release:checksums
+```
+
+`release:npm` produces `dist/goulinkh-launchpad-cli-<version>.tgz`. The assembler
+requires all six nonempty, regular binaries, normalises executable permissions,
+and packs a temporary allowlisted tree without development dependencies or
+scripts. Corresponding Rust source, lockfile, toolchain and embedded contract
+build inputs are included for GPL compliance while the source repository is
+private; npm installation never compiles them. The source checkout's `prepack`
+guard also refuses incomplete binary
+sets, preventing an accidental source-only publication. Tests install a fixture
+tarball offline with lifecycle scripts disabled and exercise the launcher.
+No Rust compilation, Cargo fallback, install-time download, or Launchpad access
+is used by npm consumers.
+
+### First npm publication
+
+The npm scope is independent of GitHub. You must control the npm account or
+organisation **`goulinkh`**, and the logged-in npm user must have publish rights
+there. The unscoped `launchpad-cli` name belongs to another project; do not use it.
+npm installs both `launchpad-cli` and the shorter alias `lpci`, backed by the
+same launcher and native binary.
+
+After committing and tagging the source as above, wait for the release workflow
+to finish. Download its already-built npm tarball and checksum manifest:
+
+```sh
+gh release download v0.1.0 --repo goulinkh/launchpad-cli --dir dist \
+  --pattern 'goulinkh-launchpad-cli-0.1.0.tgz' --pattern SHA256SUMS
+(cd dist && grep '  goulinkh-launchpad-cli-0.1.0.tgz$' SHA256SUMS | shasum -a 256 --check)
+npm login
+npm whoami
+npm publish ./dist/goulinkh-launchpad-cli-0.1.0.tgz --access public --tag latest
+npm view @goulinkh/launchpad-cli version
+```
+
+Follow npm's interactive authentication and two-factor prompts; never commit
+registry tokens. For prereleases, use `--tag next` rather than `latest`.
+Publication exposes the bundled binaries and included documentation publicly,
+even though GitHub Releases inherit the repository's visibility (currently
+private). Existing npm versions are immutable. This workflow does not publish
+to crates.io or a container registry.
 
 ## Git
 

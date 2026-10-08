@@ -1,21 +1,49 @@
 {
-  "name": "launchpad-cli",
+  "name": "@goulinkh/launchpad-cli",
   "version": "0.1.0",
-  "private": true,
   "description": "Standalone, agent-friendly Rust CLI for Launchpad",
   "type": "module",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goulinkh/launchpad-cli.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "launchpad-cli": "npm/cli.mjs",
+    "lpci": "npm/cli.mjs"
+  },
+  "files": [
+    "npm/cli.mjs",
+    "npm/platform.mjs",
+    "bin",
+    "NOTICE.md",
+    "DEVELOPMENT.md",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "src/**/*.rs",
+    "openapi/CONVERTER-LICENSE",
+    "openapi/launchpad.json.gz",
+    "openapi/provenance.json"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "openapi:fetch": "node scripts/fetch-openapi.mjs",
     "openapi:check": "node scripts/check-openapi.mjs",
-    "check:release": "node --check scripts/release-metadata.mjs && node --check scripts/package-release.mjs && node --check scripts/release-checksums.mjs",
+    "check:release": "node --check scripts/release-metadata.mjs && node --check scripts/package-release.mjs && node --check scripts/package-npm.mjs && node --check scripts/release-checksums.mjs && node --check npm/cli.mjs && node --check npm/platform.mjs",
     "check": "npm run openapi:check && npm run check:release && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings",
     "test": "node --test scripts/*.test.mjs && cargo test --locked",
     "release:metadata": "node scripts/release-metadata.mjs",
     "release:package": "node scripts/package-release.mjs",
-    "release:checksums": "node scripts/release-checksums.mjs"
+    "release:npm": "node scripts/package-npm.mjs",
+    "release:checksums": "node scripts/release-checksums.mjs",
+    "prepack": "node scripts/package-npm.mjs --check"
   },
   "devDependencies": {
     "@canonical/launchpad-openapi": "0.0.4"

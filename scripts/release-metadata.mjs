@@ -32,6 +32,10 @@ export async function metadataFromFiles(tag, root = process.cwd()) {
   return releaseMetadata(tag ?? `v${cargoVersion}`, cargoVersion, manifest.version);
 }
 
+export function npmAssetName(version) {
+  return `goulinkh-launchpad-cli-${version}.tgz`;
+}
+
 export function assetName(version, target) {
   const metadata = TARGETS[target];
   if (!metadata) throw new Error(`unsupported release target: ${target}`);
