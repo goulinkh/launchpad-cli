@@ -154,14 +154,14 @@ a host glibc dependency. Hosted runner availability and private
 repository Actions usage depend on the account's GitHub plan and policies.
 
 To publish the next version, update the `[package]` version in `Cargo.toml`
-and the version in `package.json` together (for example, to `0.1.4`), then:
+and the version in `package.json` together (for example, to `0.1.5`), then:
 
 ```sh
 cargo check
 npm install --package-lock-only --ignore-scripts
 npm run check
 npm test
-node scripts/release-metadata.mjs v0.1.4
+node scripts/release-metadata.mjs v0.1.5
 # Commit the version and lockfile changes, then:
 git push origin main
 ```
@@ -232,11 +232,11 @@ that bypasses two-factor authentication. The unscoped `launchpad-cli` name belon
 to another project; do not use it.
 
 From 0.1.3, npm installs `launchpad-cli` and the aliases `lp` and `lpcli`, all
-backed by the same launcher and native binary. Each command has a dedicated npm
-entry point that passes its public name as `argv[0]`, including through Windows
-npm shims. Help and argument errors use the invoked command, not the packaged
-binary's platform-specific filename. These replace the misspelled `lpci` alias
-from 0.1.2; automation using that name must switch to `lp` or `lpcli`.
+backed by the same launcher and native binary. These replace the misspelled
+`lpci` alias from 0.1.2; automation using that name must switch to `lp` or `lpcli`.
+From 0.1.4, each command has a dedicated npm entry point that passes its public
+name as `argv[0]`, including through Windows npm shims. Help and argument errors
+use the invoked command, not the packaged binary's platform-specific filename.
 
 Normal releases need no local npm login or browser approval once trusted
 publishing is configured. If npm publication fails after GitHub publication,
@@ -244,16 +244,17 @@ fix the publisher configuration and rerun only the npm publishing job; rerunning
 the GitHub release job will refuse its already-created tag. Never rewrite a tag
 or replace a release just to retry npm authentication.
 
-For an initial bootstrap or authorised local fallback, download the matching
-GitHub release's already-built tarball and checksum manifest (0.1.3 is shown):
+For an initial bootstrap or authorised local fallback, wait for GitHub release
+publication, then download its already-built tarball and checksum manifest
+(0.1.4 is shown):
 
 ```sh
-gh release download v0.1.3 --repo goulinkh/launchpad-cli --dir dist \
-  --pattern 'goulin-launchpad-cli-0.1.3.tgz' --pattern SHA256SUMS
-(cd dist && grep '  goulin-launchpad-cli-0.1.3.tgz$' SHA256SUMS | shasum -a 256 --check)
+gh release download v0.1.4 --repo goulinkh/launchpad-cli --dir dist \
+  --pattern 'goulin-launchpad-cli-0.1.4.tgz' --pattern SHA256SUMS
+(cd dist && grep '  goulin-launchpad-cli-0.1.4.tgz$' SHA256SUMS | shasum -a 256 --check)
 npm login
 npm whoami
-npm publish ./dist/goulin-launchpad-cli-0.1.3.tgz --access public --tag latest
+npm publish ./dist/goulin-launchpad-cli-0.1.4.tgz --access public --tag latest
 npm view @goulin/launchpad-cli version
 ```
 

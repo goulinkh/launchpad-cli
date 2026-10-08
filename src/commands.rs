@@ -264,7 +264,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "inline_comments",
         "Read inline comments on a preview diff",
         ["target", "preview_diff_id", "limit"],
-        ["target", "preview_diff_id"],
+        ["target"],
         Some("target"),
         "read"
     ),
@@ -274,7 +274,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "review_drafts",
         "Read private review drafts",
         ["target", "preview_diff_id"],
-        ["target", "preview_diff_id"],
+        ["target"],
         Some("target"),
         "read"
     ),
@@ -284,7 +284,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "diff_line_map",
         "Map a file line to a preview diff line",
         ["target", "preview_diff_id", "path", "file_line", "side"],
-        ["target", "preview_diff_id", "path", "file_line", "side"],
+        ["target", "path", "file_line", "side"],
         Some("target"),
         "read"
     ),
@@ -375,7 +375,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "side",
             "body"
         ],
-        ["target", "preview_diff_id", "path", "file_line", "side"],
+        ["target", "path", "file_line", "side"],
         Some("target"),
         "remote-write"
     ),
@@ -385,7 +385,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "review_submit",
         "Publish drafts and an optional review vote",
         ["target", "preview_diff_id", "body", "vote"],
-        ["target", "preview_diff_id"],
+        ["target"],
         Some("target"),
         "remote-write"
     ),

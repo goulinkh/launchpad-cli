@@ -58,9 +58,13 @@ pub fn command() -> Command {
                 );
             }
             for field in spec.fields {
-                let mut arg = Arg::new(*field)
-                    .long(field.replace('_', "-"))
-                    .help(format!("Request field: {field}; see launchpad-cli schema"));
+                let help = if *field == "preview_diff_id" {
+                    "Preview diff ID (default for preview operations: most recent preview)"
+                        .to_owned()
+                } else {
+                    format!("Request field: {field}; see launchpad-cli schema")
+                };
+                let mut arg = Arg::new(*field).long(field.replace('_', "-")).help(help);
                 if spec.positional == Some(*field) {
                     arg = arg.conflicts_with("identifier");
                 }

@@ -174,6 +174,8 @@ pub struct Request {
     pub importance: Option<OneOrMany>,
     pub tags: Option<Vec<String>>,
     pub limit: Option<usize>,
+    /// Preview snapshot ID; preview-based operations default to the proposal's
+    /// current preview when omitted. An explicit snapshot may also be in the target.
     pub preview_diff_id: Option<u64>,
     pub current_diff_only: Option<bool>,
     pub unresolved_only: Option<bool>,
@@ -544,7 +546,7 @@ impl Request {
         self.limit.unwrap_or(10)
     }
 
-    pub fn preview_diff_id(&self) -> Result<u64> {
+    pub fn preview_diff_id(&self) -> Result<Option<u64>> {
         if self.preview_diff_id == Some(0) {
             return Err(Error::invalid("preview_diff_id must be greater than zero"));
         }
@@ -563,9 +565,7 @@ impl Request {
                 "target and preview_diff_id select different snapshots",
             ));
         }
-        self.preview_diff_id
-            .or(target_id)
-            .ok_or_else(|| Error::invalid(format!("preview_diff_id is required for {:?}", self.op)))
+        Ok(self.preview_diff_id.or(target_id))
     }
 
     pub fn file_line(&self) -> Result<u64> {
@@ -1081,7 +1081,7 @@ mod tests {
         )
         .unwrap();
         request.validate().unwrap();
-        assert_eq!(request.preview_diff_id().unwrap(), 17);
+        assert_eq!(request.preview_diff_id().unwrap(), Some(17));
     }
 
     #[test]

@@ -285,6 +285,190 @@ fn rejects_duplicate_flag_and_json_fields() {
     );
 }
 
+const PREVIEW_COMMANDS: [(&str, &str, &[&str]); 5] = [
+    ("inline-comments", "inline_comments", &[]),
+    ("drafts", "review_drafts", &[]),
+    (
+        "map-line",
+        "diff_line_map",
+        &[
+            "--path",
+            "README.md",
+            "--file-line",
+            "2",
+            "--side",
+            "modified",
+        ],
+    ),
+    (
+        "draft",
+        "review_draft_update",
+        &[
+            "--path",
+            "README.md",
+            "--file-line",
+            "2",
+            "--side",
+            "modified",
+            "--body",
+            "New review",
+        ],
+    ),
+    ("review", "review_submit", &["--body", "New review"]),
+];
+
+#[test]
+fn preview_defaults_stay_unresolved_on_offline_dry_runs_for_both_surfaces() {
+    for (action, operation, fields) in PREVIEW_COMMANDS {
+        let mut arguments = vec!["merge-proposal", action, "42", "--dry-run"];
+        arguments.extend_from_slice(fields);
+        let output = run(&arguments, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let result = document(&output);
+        assert_eq!(result["data"]["executed"], false);
+        assert_eq!(result["data"]["request"]["op"], operation);
+        assert!(result["data"]["request"].get("preview_diff_id").is_none());
+        let input = result["data"]["request"].to_string();
+        let legacy = run(&["tool", "--input", "-", "--dry-run"], Some(&input));
+        assert!(
+            legacy.status.success(),
+            "{}",
+            String::from_utf8_lossy(&legacy.stdout)
+        );
+        assert_eq!(
+            document(&legacy)["data"]["request"],
+            result["data"]["request"]
+        );
+        if matches!(action, "draft" | "review") {
+            arguments.retain(|argument| *argument != "--dry-run");
+            let denied = run(&arguments, None);
+            assert_eq!(denied.status.code(), Some(2));
+            assert!(
+                document(&denied)["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--yes")
+            );
+        }
+    }
+}
+
+#[test]
+fn preview_command_discovery_and_validation_treat_snapshot_ids_as_optional() {
+    let output = run(&["schema"], None);
+    let catalog = document(&output);
+    assert!(
+        catalog["data"]["request_schema"]["properties"]["preview_diff_id"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("current preview")
+    );
+    for (action, _, fields) in PREVIEW_COMMANDS {
+        let spec = catalog["data"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["group"] == "merge-proposal" && spec["action"] == action)
+            .unwrap();
+        assert!(
+            !spec["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("preview_diff_id"))
+        );
+        let help = run(&["merge-proposal", action, "--help"], None);
+        assert!(help.status.success());
+        assert!(String::from_utf8_lossy(&help.stdout).contains("most recent preview"));
+        for (target, id, message) in [
+            ("42", "0", "must be greater than zero"),
+            (
+                "lp://~owner/project/+git/repo/+merge/42/diff/17",
+                "18",
+                "select different snapshots",
+            ),
+        ] {
+            let mut arguments = vec![
+                "merge-proposal",
+                action,
+                target,
+                "--preview-diff-id",
+                id,
+                "--dry-run",
+            ];
+            arguments.extend_from_slice(fields);
+            let invalid = run(&arguments, None);
+            assert_eq!(invalid.status.code(), Some(2));
+            assert!(
+                document(&invalid)["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+        }
+    }
+}
+
+#[test]
+fn inline_comments_without_a_preview_id_use_the_latest_proposal_preview() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let proposal_path = "/devel/~owner/project/+git/repo/+merge/42";
+    let server = thread::spawn(move || {
+        for expected_path in [
+            proposal_path.to_owned(),
+            "/devel/previews/102".to_owned(),
+            format!("{proposal_path}?ws.op=getInlineComments&previewdiff_id=102"),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            let size = stream.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..size]);
+            assert!(
+                request.starts_with(&format!("GET {expected_path} ")),
+                "{request}"
+            );
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+            let body = if expected_path == proposal_path {
+                json!({
+                    "id": 42,
+                    "self_link": format!("http://{address}{proposal_path}"),
+                    "preview_diff_link": format!("http://{address}/devel/previews/102"),
+                })
+            } else if expected_path == "/devel/previews/102" {
+                json!({"id": 102, "stale": false})
+            } else {
+                json!([])
+            };
+            let body = body.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_launchpad-cli"))
+        .args([
+            "merge-proposal",
+            "inline-comments",
+            "lp://~owner/project/+git/repo/+merge/42",
+        ])
+        .env("LAUNCHPAD_CLI_ANONYMOUS", "1")
+        .env("LAUNCHPAD_CLI_API_BASE", format!("http://{address}/devel"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    server.join().unwrap();
+    assert_eq!(document(&output)["data"]["details"]["preview_diff_id"], 102);
+}
+
 #[test]
 fn original_operation_names_remain_directly_callable() {
     let output = run(

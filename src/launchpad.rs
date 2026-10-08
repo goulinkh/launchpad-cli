@@ -88,10 +88,6 @@ fn launchpad_client(require_authentication: bool) -> Result<LaunchpadClient> {
     crate::api::client(require_authentication)
 }
 
-fn api_base_url() -> Result<String> {
-    Ok(auth::api_base_url()?)
-}
-
 async fn view_resource(client: &LaunchpadClient, request: &Request) -> Result<OperationResult> {
     let mut target = ResourceTarget::parse(request.target()?)?;
     select_preview_diff(&mut target, request.preview_diff_id)?;
@@ -215,7 +211,7 @@ async fn view_merge_proposal_value(
     if target.diff {
         let preview_diff = get_preview_diff(client, &proposal, target.preview_diff_id).await?;
         let preview_diff_id = preview_diff_id(&preview_diff)?;
-        let mut text = get_diff_text(&preview_diff).await?;
+        let mut text = get_diff_text(client, &preview_diff).await?;
         let truncated = text.len() > MAX_FILE_BYTES;
         if truncated {
             text.truncate(floor_char_boundary(&text, MAX_FILE_BYTES));
@@ -316,7 +312,7 @@ async fn view_preview_diffs(
         if !diffstat.contains_key("dev/null") && !diffstat.contains_key("/dev/null") {
             continue;
         }
-        let diff_text = get_diff_text(preview_diff).await?;
+        let diff_text = get_diff_text(client, preview_diff).await?;
         let deletions = diff::deleted_file_stats(&diff_text);
         if deletions.is_empty() {
             return Err(Error::invalid(
@@ -403,9 +399,10 @@ async fn view_inline_comments(
     client: &LaunchpadClient,
     request: &Request,
 ) -> Result<OperationResult> {
-    let preview_diff_id = request.preview_diff_id()?;
+    let requested_id = request.preview_diff_id()?;
     let (_, proposal) = request_merge_proposal(client, request).await?;
-    get_preview_diff(client, &proposal, Some(preview_diff_id)).await?;
+    let preview_diff = get_preview_diff(client, &proposal, requested_id).await?;
+    let preview_diff_id = preview_diff_id(&preview_diff)?;
     let comments = inline_comments(client, &proposal, preview_diff_id).await?;
     let source_url = render::text_field(&proposal, "web_link").map(str::to_owned);
     let proposal_id =
@@ -425,9 +422,10 @@ async fn view_review_drafts(
     client: &LaunchpadClient,
     request: &Request,
 ) -> Result<OperationResult> {
-    let preview_diff_id = request.preview_diff_id()?;
+    let requested_id = request.preview_diff_id()?;
     let (_, proposal) = request_merge_proposal(client, request).await?;
-    get_preview_diff(client, &proposal, Some(preview_diff_id)).await?;
+    let preview_diff = get_preview_diff(client, &proposal, requested_id).await?;
+    let preview_diff_id = preview_diff_id(&preview_diff)?;
     let drafts = review_drafts(client, &proposal, preview_diff_id).await?;
     let source_url = render::text_field(&proposal, "web_link").map(str::to_owned);
     let proposal_id =
@@ -444,12 +442,13 @@ async fn view_review_drafts(
 }
 
 async fn map_diff_line(client: &LaunchpadClient, request: &Request) -> Result<OperationResult> {
-    let preview_diff_id = request.preview_diff_id()?;
+    let requested_id = request.preview_diff_id()?;
     let file_line = request.file_line()?;
     let side = request.side()?;
     let (_, proposal) = request_merge_proposal(client, request).await?;
-    let preview_diff = get_preview_diff(client, &proposal, Some(preview_diff_id)).await?;
-    let diff_text = get_diff_text(&preview_diff).await?;
+    let preview_diff = get_preview_diff(client, &proposal, requested_id).await?;
+    let preview_diff_id = preview_diff_id(&preview_diff)?;
+    let diff_text = get_diff_text(client, &preview_diff).await?;
     let location = diff::map_file_line(&diff_text, request.path("path")?, side, file_line)
         .ok_or_else(|| Error::invalid("file line is not present in the selected preview diff"))?;
     let source_url = render::text_field(&proposal, "web_link").map(str::to_owned);
@@ -825,7 +824,7 @@ async fn view_merge_proposal_discussion(
         let diff_text = if comments.is_empty() {
             None
         } else {
-            Some(get_diff_text(preview_diff).await?)
+            Some(get_diff_text(client, preview_diff).await?)
         };
         let mut grouped = BTreeMap::<usize, Vec<&Value>>::new();
         for comment in &comments {
@@ -2284,12 +2283,13 @@ async fn update_review_draft(
     client: &LaunchpadClient,
     request: &Request,
 ) -> Result<OperationResult> {
-    let preview_diff_id = request.preview_diff_id()?;
+    let requested_id = request.preview_diff_id()?;
     let file_line = request.file_line()?;
     let side = request.side()?;
     let (_, proposal) = request_merge_proposal(client, request).await?;
-    let preview_diff = enforce_current_preview_diff(client, &proposal, preview_diff_id).await?;
-    let diff_text = get_diff_text(&preview_diff).await?;
+    let preview_diff = enforce_current_preview_diff(client, &proposal, requested_id).await?;
+    let preview_diff_id = preview_diff_id(&preview_diff)?;
+    let diff_text = get_diff_text(client, &preview_diff).await?;
     let location = diff::map_file_line(&diff_text, request.path("path")?, side, file_line)
         .ok_or_else(|| Error::invalid("file line is not present in the selected preview diff"))?;
     if !location.is_commentable() {
@@ -2315,7 +2315,7 @@ async fn update_review_draft(
         "deleted"
     };
     let (_, current_proposal) = request_merge_proposal(client, request).await?;
-    enforce_current_preview_diff(client, &current_proposal, preview_diff_id).await?;
+    enforce_current_preview_diff(client, &current_proposal, Some(preview_diff_id)).await?;
     save_review_drafts(client, &current_proposal, preview_diff_id, &drafts).await?;
 
     let source_url = render::text_field(&proposal, "web_link")
@@ -2342,9 +2342,10 @@ async fn update_review_draft(
 }
 
 async fn submit_review(client: &LaunchpadClient, request: &Request) -> Result<OperationResult> {
-    let preview_diff_id = request.preview_diff_id()?;
+    let requested_id = request.preview_diff_id()?;
     let (_, proposal) = request_merge_proposal(client, request).await?;
-    enforce_current_preview_diff(client, &proposal, preview_diff_id).await?;
+    let preview_diff = enforce_current_preview_diff(client, &proposal, requested_id).await?;
+    let preview_diff_id = preview_diff_id(&preview_diff)?;
     let drafts = review_drafts(client, &proposal, preview_diff_id).await?;
     let draft_count = drafts.as_object().map_or(0, serde_json::Map::len);
     let content = request.body.as_deref().unwrap_or_default();
@@ -2354,7 +2355,7 @@ async fn submit_review(client: &LaunchpadClient, request: &Request) -> Result<Op
         ));
     }
     let (_, current_proposal) = request_merge_proposal(client, request).await?;
-    enforce_current_preview_diff(client, &current_proposal, preview_diff_id).await?;
+    enforce_current_preview_diff(client, &current_proposal, Some(preview_diff_id)).await?;
     create_inline_review(
         client,
         &current_proposal,
@@ -2721,10 +2722,10 @@ fn preview_diff_id(preview_diff: &Value) -> Result<u64> {
         .ok_or_else(|| Error::invalid("Launchpad returned a preview diff without an ID"))
 }
 
-async fn get_diff_text(preview_diff: &Value) -> Result<String> {
+async fn get_diff_text(client: &LaunchpadClient, preview_diff: &Value) -> Result<String> {
     let diff_text_link = render::text_field(preview_diff, "diff_text_link")
         .ok_or_else(|| Error::invalid("preview diff has no diff text"))?;
-    let url = diff_download_url(diff_text_link)?;
+    let url = diff_download_url(client, diff_text_link)?;
     let response = reqwest::get(url.clone())
         .await
         .map_err(|source| Error::Web {
@@ -2744,8 +2745,8 @@ async fn get_diff_text(preview_diff: &Value) -> Result<String> {
     })
 }
 
-fn diff_download_url(diff_text_link: &str) -> Result<Url> {
-    let base_url = api_base_url()?;
+fn diff_download_url(client: &LaunchpadClient, diff_text_link: &str) -> Result<Url> {
+    let base_url = client.url("");
     let base = Url::parse(&base_url).map_err(|source| Error::Url {
         url: base_url,
         source,
@@ -2877,9 +2878,10 @@ async fn create_inline_review(
 async fn enforce_current_preview_diff(
     client: &LaunchpadClient,
     proposal: &Value,
-    requested_id: u64,
+    requested_id: Option<u64>,
 ) -> Result<Value> {
     let current = get_preview_diff(client, proposal, None).await?;
+    let requested_id = requested_id.unwrap_or(preview_diff_id(&current)?);
     validate_current_preview_diff(&current, requested_id)?;
     Ok(current)
 }
@@ -3265,7 +3267,7 @@ mod tests {
         validate_current_preview_diff, view_merge_proposal_for_branch,
     };
     use crate::client::LaunchpadClient;
-    use crate::request::{DiscussionFormat, Request, ResourceTarget};
+    use crate::request::{DiscussionFormat, Operation, Request, ResourceTarget};
 
     async fn read_request_headers(stream: &mut TcpStream) -> String {
         let mut request = Vec::new();
@@ -3309,6 +3311,289 @@ mod tests {
         let body =
             String::from_utf8(bytes[header_end..header_end + content_length].to_vec()).unwrap();
         (headers, body)
+    }
+
+    fn preview_request(operation: Operation, requested_id: Option<u64>) -> Value {
+        let mut input = json!({
+            "op": operation,
+            "target": "lp://~owner/project/+git/repo/+merge/42",
+        });
+        if let Some(id) = requested_id {
+            input["preview_diff_id"] = json!(id);
+        }
+        if matches!(
+            operation,
+            Operation::DiffLineMap | Operation::ReviewDraftUpdate
+        ) {
+            input["path"] = json!("README.md");
+            input["file_line"] = json!(2);
+            input["side"] = json!("modified");
+        }
+        if matches!(
+            operation,
+            Operation::ReviewDraftUpdate | Operation::ReviewSubmit
+        ) {
+            input["body"] = json!("New review comment");
+        }
+        input
+    }
+
+    async fn preview_scenario(
+        input: Value,
+        previews: Vec<Value>,
+    ) -> (
+        crate::result::Result<crate::response::OperationResult>,
+        Vec<(String, String, String)>,
+    ) {
+        assert!(!previews.is_empty());
+        let request: Request = serde_json::from_value(input).unwrap();
+        request.validate().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = format!("http://{address}/devel");
+        let server_base = base.clone();
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let proposal_path = "/devel/~owner/project/+git/repo/+merge/42";
+            let mut proposal_reads = 0_usize;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (headers, body) = read_http_request(&mut stream).await;
+                assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+                let mut words = headers.split_ascii_whitespace();
+                let method = words.next().unwrap();
+                let path = words.next().unwrap();
+                requests_tx
+                    .send((method.to_owned(), path.to_owned(), body))
+                    .unwrap();
+                let (content_type, response) = if method == "GET" && path == proposal_path {
+                    let current = &previews[proposal_reads.min(previews.len() - 1)];
+                    proposal_reads += 1;
+                    let mut proposal = json!({
+                        "id": 42,
+                        "self_link": format!("http://{address}{proposal_path}"),
+                        "web_link": "https://code.launchpad.net/~owner/project/+git/repo/+merge/42",
+                        "preview_diffs_collection_link": format!("{server_base}/previews"),
+                    });
+                    if !current.is_null() {
+                        proposal["preview_diff_link"] = json!(format!("{server_base}/preview"));
+                    }
+                    ("application/json", proposal.to_string())
+                } else if method == "GET" && path == "/devel/preview" {
+                    let mut current =
+                        previews[proposal_reads.saturating_sub(1).min(previews.len() - 1)].clone();
+                    current["diff_text_link"] = json!(format!("{server_base}/diff-text"));
+                    ("application/json", current.to_string())
+                } else if method == "GET" && path == "/devel/previews" {
+                    ("application/json", json!({
+                        "entries": [
+                            {"id": 101, "stale": true, "diff_text_link": format!("{server_base}/diff-text")},
+                            {"id": 102, "stale": false, "diff_text_link": format!("{server_base}/diff-text")}
+                        ],
+                        "next_collection_link": null,
+                    }).to_string())
+                } else if method == "GET" && path == "/devel/diff-text" {
+                    ("text/plain", "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,2 @@\n unchanged\n-old\n+new\n".to_owned())
+                } else if method == "GET" && path.starts_with(&format!("{proposal_path}?")) {
+                    let url = Url::parse(&format!("http://{address}{path}")).unwrap();
+                    let parameters: HashMap<_, _> = url.query_pairs().into_owned().collect();
+                    let response = match parameters["ws.op"].as_str() {
+                        "getInlineComments" => json!([]),
+                        "getDraftInlineComments" => json!({"5": "Existing draft"}),
+                        operation => panic!("unexpected operation: {operation}"),
+                    };
+                    ("application/json", response.to_string())
+                } else if method == "POST" && path == proposal_path {
+                    ("application/json", "{}".to_owned())
+                } else {
+                    panic!("unexpected request: {method} {path}");
+                };
+                stream.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                ).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LaunchpadClient::new(None).with_base_url(base);
+        let result = match request.op {
+            Operation::InlineComments => super::view_inline_comments(&client, &request).await,
+            Operation::ReviewDrafts => super::view_review_drafts(&client, &request).await,
+            Operation::DiffLineMap => super::map_diff_line(&client, &request).await,
+            Operation::ReviewDraftUpdate => super::update_review_draft(&client, &request).await,
+            Operation::ReviewSubmit => super::submit_review(&client, &request).await,
+            operation => panic!("unexpected operation: {operation:?}"),
+        };
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        let mut requests = Vec::new();
+        while let Ok(request) = requests_rx.try_recv() {
+            requests.push(request);
+        }
+        (result, requests)
+    }
+
+    #[tokio::test]
+    async fn preview_operations_default_to_the_most_recent_snapshot() {
+        for operation in [
+            Operation::InlineComments,
+            Operation::ReviewDrafts,
+            Operation::DiffLineMap,
+            Operation::ReviewDraftUpdate,
+            Operation::ReviewSubmit,
+        ] {
+            let (result, requests) = preview_scenario(
+                preview_request(operation, None),
+                vec![json!({"id": 102, "stale": false})],
+            )
+            .await;
+            let details = result.unwrap().details;
+            assert_eq!(details["preview_diff_id"], 102, "{operation:?}");
+            assert!(
+                !requests
+                    .iter()
+                    .any(|(_, path, _)| path == "/devel/previews")
+            );
+            for (method, path, body) in &requests {
+                if method == "POST" {
+                    let fields: HashMap<_, _> = url::form_urlencoded::parse(body.as_bytes())
+                        .into_owned()
+                        .collect();
+                    assert_eq!(fields["previewdiff_id"], "102");
+                    if operation == Operation::ReviewDraftUpdate {
+                        assert_eq!(fields["ws.op"], "saveDraftInlineComment");
+                        assert_eq!(
+                            serde_json::from_str::<Value>(&fields["comments"]).unwrap(),
+                            json!({
+                                "5": "Existing draft", "7": "New review comment"
+                            })
+                        );
+                    } else {
+                        assert_eq!(fields["ws.op"], "createComment");
+                    }
+                } else if path.contains("ws.op=") {
+                    let url = Url::parse(&format!("http://localhost{path}")).unwrap();
+                    let fields: HashMap<_, _> = url.query_pairs().into_owned().collect();
+                    assert_eq!(fields["previewdiff_id"], "102");
+                }
+            }
+            if matches!(
+                operation,
+                Operation::ReviewDraftUpdate | Operation::ReviewSubmit
+            ) {
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|(method, _, _)| method == "POST")
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_preview_selectors_override_read_defaults_and_validate_membership() {
+        for operation in [
+            Operation::InlineComments,
+            Operation::ReviewDrafts,
+            Operation::DiffLineMap,
+        ] {
+            for in_target in [false, true] {
+                let mut input =
+                    preview_request(operation, if in_target { None } else { Some(101) });
+                if in_target {
+                    input["target"] = json!("lp://~owner/project/+git/repo/+merge/42/diff/101");
+                }
+                let (result, requests) = preview_scenario(input, vec![json!({"id": 102})]).await;
+                assert_eq!(result.unwrap().details["preview_diff_id"], 101);
+                assert!(
+                    requests
+                        .iter()
+                        .any(|(_, path, _)| path == "/devel/previews")
+                );
+                assert!(!requests.iter().any(|(_, path, _)| path == "/devel/preview"));
+            }
+            let (result, _) = preview_scenario(
+                preview_request(operation, Some(999)),
+                vec![json!({"id": 102})],
+            )
+            .await;
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not belong to this merge proposal")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_defaults_reject_missing_or_invalid_current_snapshots() {
+        for operation in [
+            Operation::InlineComments,
+            Operation::ReviewDrafts,
+            Operation::DiffLineMap,
+            Operation::ReviewDraftUpdate,
+            Operation::ReviewSubmit,
+        ] {
+            for (preview, message) in [
+                (Value::Null, "no current preview diff"),
+                (json!({"id": 0}), "preview diff without an ID"),
+            ] {
+                let (result, requests) =
+                    preview_scenario(preview_request(operation, None), vec![preview]).await;
+                assert!(
+                    result.unwrap_err().to_string().contains(message),
+                    "{operation:?}"
+                );
+                assert!(
+                    !requests
+                        .iter()
+                        .any(|(method, path, _)| method == "POST" || path == "/devel/previews")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_writes_keep_the_resolved_snapshot_pinned_and_reject_staleness() {
+        for operation in [Operation::ReviewDraftUpdate, Operation::ReviewSubmit] {
+            for (previews, message) in [
+                (vec![json!({"id": 102, "stale": true})], "marked stale"),
+                (
+                    vec![json!({"id": 102}), json!({"id": 103})],
+                    "current preview diff is 103",
+                ),
+                (
+                    vec![json!({"id": 102}), json!({"id": 102, "stale": true})],
+                    "marked stale",
+                ),
+                (
+                    vec![json!({"id": 102}), Value::Null],
+                    "no current preview diff",
+                ),
+            ] {
+                let (result, requests) =
+                    preview_scenario(preview_request(operation, None), previews).await;
+                assert!(
+                    result.unwrap_err().to_string().contains(message),
+                    "{operation:?}"
+                );
+                assert!(!requests.iter().any(|(method, _, _)| method == "POST"));
+            }
+            let (result, requests) = preview_scenario(
+                preview_request(operation, Some(101)),
+                vec![json!({"id": 102})],
+            )
+            .await;
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("current preview diff is 102")
+            );
+            assert!(!requests.iter().any(|(method, _, _)| method == "POST"));
+        }
     }
 
     #[tokio::test]

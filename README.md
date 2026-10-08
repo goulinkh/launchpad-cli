@@ -67,6 +67,7 @@ launchpad-cli merge-proposal for-branch --repository launchpad-ui --branch featu
 launchpad-cli merge-proposal current
 launchpad-cli merge-proposal discussion 'lp://~owner/project/+git/repo/+merge/123'
 launchpad-cli merge-proposal diff 'lp://~owner/project/+git/repo/+merge/123'
+launchpad-cli merge-proposal inline-comments 'lp://~owner/project/+git/repo/+merge/123'
 ```
 
 Proposal lookup may use a numeric ID, a canonical Launchpad URL, or an `lp://`
@@ -75,6 +76,14 @@ The `current` command infers the source repository and ref from local Git.
 A discussion is a compact review summary by default; `--format structured`
 puts the complete discussion in `data.text`, with structured fields also in
 `data.details`.
+
+Preview-based commands (`inline-comments`, `drafts`, `map-line`, `draft`, and
+`review`) default to the proposal's most recent preview diff. To select a
+snapshot explicitly, pass `--preview-diff-id ID` or a target ending in
+`/diff/ID`. If no current preview exists, the command reports that rather than
+selecting old history. Draft changes and review submissions still require a
+current, non-stale preview and recheck that snapshot immediately before writing.
+Dry runs stay offline and leave an omitted preview ID unresolved.
 
 Bugs and bug tasks are separate resources. Editing a bug's title does not
 change the status of its Ubuntu or project task:
