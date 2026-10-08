@@ -41,8 +41,8 @@ launchpad-cli --help
 
 Native archives are also published to
 [GitHub Releases](https://github.com/goulinkh/launchpad-cli/releases) when a
-version tag is pushed. Linux (musl), macOS, and Windows builds are available
-for x64 and arm64, with `SHA256SUMS`. Extract the archive and put
+package version bump is pushed to `main`. Linux (musl), macOS, and Windows
+builds are available for x64 and arm64, with `SHA256SUMS`. Extract the archive and put
 `launchpad-cli` (`launchpad-cli.exe` on Windows) on your `PATH`. Access to
 releases follows the repository's visibility; private releases require GitHub
 authentication. Node.js and Rust are not needed to run a downloaded binary.

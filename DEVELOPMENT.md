@@ -112,18 +112,26 @@ Three workflows are included:
 - `.github/workflows/check.yml` verifies main-branch pushes and pull requests.
 - `.github/workflows/security.yml` checks Actions security with zizmor without
   requiring paid GitHub Advanced Security features for a private repository.
-- `.github/workflows/release.yml` verifies `v*` tags, builds and smoke-tests
-  native binaries, assembles `@goulin/launchpad-cli`, and publishes a GitHub
-  release only after every build passes. npm registry publishing is a separate,
-  authenticated local step.
+- `.github/workflows/release.yml` runs when `package.json` changes on `main`.
+  It compares the package version with the pre-push revision, validates both
+  manifests, verifies the source, builds and smoke-tests all six targets, and
+  assembles `@goulin/launchpad-cli`. Only a version change releases anything;
+  changes to other manifest fields skip verification, builds and publication.
 
-GitHub publishing uses the workflow's built-in `GITHUB_TOKEN`; no personal access
-token, registry credentials, or extra secrets are required for that workflow.
-Only the publishing job has `contents: write`. Actions are pinned to commit
-SHAs, checkout does not persist credentials, and tagged source passes the full
-test suite before packaging.
+The GitHub release job creates an annotated `v<version>` tag at the pushed
+commit, publishes the immutable release assets, and preserves the verified npm
+tarball as a workflow artifact. A separate job publishes that exact tarball to
+npm through OpenID Connect trusted publishing. Stable versions use the `latest`
+npm dist-tag; prereleases use `next` and are marked as GitHub prereleases.
+
+GitHub publishing uses the workflow's built-in `GITHUB_TOKEN`. Only the release
+job has `contents: write`; only the npm publishing job has `id-token: write`.
+No personal access token, registry token or extra secret is required. Actions
+are pinned to commit SHAs, checkout does not persist credentials, and source
+checkouts use the triggering commit rather than a moving branch. The npm job
+has no source checkout and uses the pinned npm 11.19.1 client with Node.js 24.
 Keep GitHub Actions enabled and ensure repository or organisation policies allow
-these pinned actions and the publishing job's write permission.
+these pinned actions and the release job's write permission.
 
 Supported release targets:
 
@@ -139,32 +147,34 @@ Supported release targets:
 Each archive contains the executable, README, NOTICE, and applicable licence
 texts. Archives are named `launchpad-cli-<version>-<platform>-<architecture>`;
 platform values are `linux`, `darwin`, and `win32`. Packaging checks the binary's
-version and offline agent schema without contacting Launchpad. The publish job
+version and offline agent schema without contacting Launchpad. The release job
 requires exactly six nonempty native archives plus the universal npm tarball,
 and attaches `SHA256SUMS` for all seven files. Linux builds use musl to avoid
 a host glibc dependency. Hosted runner availability and private
 repository Actions usage depend on the account's GitHub plan and policies.
 
-To publish the current version after committing the source:
+To publish the next version, update the `[package]` version in `Cargo.toml`
+and the version in `package.json` together (for example, to `0.1.4`), then:
 
 ```sh
+cargo check
+npm install --package-lock-only --ignore-scripts
 npm run check
 npm test
-node scripts/release-metadata.mjs v0.1.3
-# No release is created until the tag is pushed:
-git tag -a v0.1.3 -m 'launchpad-cli v0.1.3'
+node scripts/release-metadata.mjs v0.1.4
+# Commit the version and lockfile changes, then:
 git push origin main
-git push origin v0.1.3
 ```
 
-For later releases, update the `[package]` version in `Cargo.toml` and the
-version in `package.json`, then run `cargo check` and
-`npm install --package-lock-only --ignore-scripts` to update the lockfiles.
-Commit the changes and push a matching tag. Mismatched or invalid tags fail;
-prerelease versions such as `v0.2.0-rc.1` are marked as GitHub prereleases and do
-not become the latest stable release. Existing tags and releases are not
-rewritten or replaced by the workflow. Choose a new version instead of reusing
-an already published tag.
+Do not create or push a release tag manually; the workflow creates it after
+verification and all builds pass. Tag pushes no longer trigger releases.
+Version detection compares with `github.event.before`, including a multi-commit
+push, rather than only the previous commit. An initial branch push or a baseline
+without `package.json` is treated as a new version; an unknown baseline fails
+rather than guessing. Invalid versions and mismatched manifests fail before
+building. Existing tags, releases and npm versions are never rewritten or
+replaced. Choose a new version instead of reusing a published one. Updating the
+workflow or other package metadata without a version change does not release.
 
 To package one native target locally:
 
@@ -176,7 +186,7 @@ npm run release:package -- aarch64-apple-darwin
 Packaging must run on the binary's matching OS and architecture so the smoke
 test actually executes it. Native archives go to ignored `dist/`; each verified
 executable is also staged under ignored `bin/` with a platform-specific name.
-The matrix uploads both, and the publishing job combines all six builds.
+The matrix uploads both, and the release job combines all six builds.
 Windows ZIP packaging invokes the system's native bsdtar explicitly rather than
 Git Bash's GNU tar, which interprets drive-letter paths as remote hosts.
 
@@ -199,22 +209,43 @@ disabled and exercise the launcher.
 No Rust compilation, Cargo fallback, install-time download, or Launchpad access
 is used by npm consumers.
 
-### First npm publication
+### npm trusted publishing and local fallback
 
 The `v0.1.0` build failed at Windows ZIP packaging before publishing any release.
 The `v0.1.1` tag still used the unavailable `@goulinkh` npm scope. Both tags remain
 unchanged; the first npm release uses `v0.1.2` and **`@goulin/launchpad-cli`**.
 
-The npm scope is independent of GitHub. Authenticate as the npm user **`goulin`**
-to publish in that personal namespace; the repository remains under GitHub's
-`goulinkh` account. The unscoped `launchpad-cli` name belongs to another project;
-do not use it.
-From 0.1.3, npm installs `launchpad-cli` and the aliases `lp` and `lpcli`, all
-backed by the same launcher and native binary. These replace the misspelled
-`lpci` alias from 0.1.2; automation using that name must switch to `lp` or `lpcli`.
+Configure a GitHub Actions trusted publisher in the npm settings for
+**`@goulin/launchpad-cli`**:
 
-After committing and tagging the current source as above, wait for the release
-workflow to finish. Download its already-built npm tarball and checksum manifest:
+- GitHub owner: **`goulinkh`**
+- Repository: **`launchpad-cli`**
+- Workflow filename: **`release.yml`**
+- Environment: leave unset; this workflow does not declare an environment
+- Under **Allowed actions**, explicitly enable direct **`npm publish`**; the
+  default staged-publish grant does not authorise this workflow
+
+The npm scope is independent of GitHub. Use the npm account **`goulin`** to
+configure that package or publish locally; the repository remains under GitHub's
+`goulinkh` account. Do not add an `NPM_TOKEN` secret or replace OIDC with a token
+that bypasses two-factor authentication. The unscoped `launchpad-cli` name belongs
+to another project; do not use it.
+
+From 0.1.3, npm installs `launchpad-cli` and the aliases `lp` and `lpcli`, all
+backed by the same launcher and native binary. Each command has a dedicated npm
+entry point that passes its public name as `argv[0]`, including through Windows
+npm shims. Help and argument errors use the invoked command, not the packaged
+binary's platform-specific filename. These replace the misspelled `lpci` alias
+from 0.1.2; automation using that name must switch to `lp` or `lpcli`.
+
+Normal releases need no local npm login or browser approval once trusted
+publishing is configured. If npm publication fails after GitHub publication,
+fix the publisher configuration and rerun only the npm publishing job; rerunning
+the GitHub release job will refuse its already-created tag. Never rewrite a tag
+or replace a release just to retry npm authentication.
+
+For an initial bootstrap or authorised local fallback, download the matching
+GitHub release's already-built tarball and checksum manifest (0.1.3 is shown):
 
 ```sh
 gh release download v0.1.3 --repo goulinkh/launchpad-cli --dir dist \

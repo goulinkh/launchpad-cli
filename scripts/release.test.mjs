@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { detectRelease } from './detect-release.mjs';
 import { archiveInvocation, packageRelease } from './package-release.mjs';
 import { releaseChecksums } from './release-checksums.mjs';
 import { binaryName } from '../npm/platform.mjs';
@@ -37,6 +39,87 @@ test('reads package versions without resolving Cargo dependencies', async () => 
     assert.equal((await metadataFromFiles('v1.2.3', root)).version, '1.2.3');
     await writeFile(join(root, 'package.json'), '{"version":"2.0.0"}');
     await assert.rejects(metadataFromFiles('v1.2.3', root), /must match/);
+  });
+});
+
+function git(root, ...args) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+function initialiseGit(root) {
+  git(root, 'init', '--quiet');
+  git(root, 'config', 'user.name', 'Release Test');
+  git(root, 'config', 'user.email', 'release@example.test');
+  git(root, 'config', 'commit.gpgSign', 'false');
+}
+
+function commit(root) {
+  git(root, 'add', '--all');
+  git(root, 'commit', '--quiet', '-m', 'test fixture');
+  return git(root, 'rev-parse', 'HEAD');
+}
+
+test('release detection skips other manifest changes and compares the pre-push revision', async () => {
+  await fixture(async root => {
+    initialiseGit(root);
+    await manifests(root);
+    const before = commit(root);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@goulin/launchpad-cli', version: '1.2.3', description: 'changed metadata' }));
+    assert.equal((await detectRelease(before, root)).changed, false);
+    await manifests(root, '1.2.4');
+    const bumped = commit(root);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@goulin/launchpad-cli', version: '1.2.4', description: 'another commit in the push' }));
+    commit(root);
+    assert.deepEqual(await detectRelease(before, root), {
+      changed: true, tag: 'v1.2.4', version: '1.2.4', prerelease: false, npm_asset: 'goulin-launchpad-cli-1.2.4.tgz',
+    });
+    assert.equal((await detectRelease(bumped, root)).changed, false);
+  });
+});
+
+test('release detection handles initial pushes and absent prior manifests', async () => {
+  await fixture(async root => {
+    await manifests(root, '1.2.3-rc.1');
+    for (const length of [40, 64]) {
+      const result = await detectRelease('0'.repeat(length), root);
+      assert.equal(result.changed, true);
+      assert.equal(result.prerelease, true);
+      assert.equal(result.tag, 'v1.2.3-rc.1');
+    }
+    initialiseGit(root);
+    await writeFile(join(root, 'README.md'), 'initial repository');
+    git(root, 'add', 'README.md');
+    git(root, 'commit', '--quiet', '-m', 'initial fixture');
+    const before = git(root, 'rev-parse', 'HEAD');
+    assert.equal((await detectRelease(before, root)).changed, true);
+  });
+});
+
+test('release detection rejects invalid baselines and inconsistent current manifests', async () => {
+  await fixture(async root => {
+    initialiseGit(root);
+    await manifests(root);
+    commit(root);
+    for (const before of [undefined, '', 'HEAD', '--help', 'a'.repeat(39), `${'a'.repeat(40)}\n`]) {
+      await assert.rejects(detectRelease(before, root), /full Git commit SHA/);
+    }
+    await assert.rejects(detectRelease('f'.repeat(40), root), /Command failed/);
+    await writeFile(join(root, 'package.json'), '{"version":"1.2.4"}');
+    await assert.rejects(detectRelease('0'.repeat(40), root), /must match/);
+    await manifests(root, '1.2.3\nchanged=true');
+    await assert.rejects(detectRelease('0'.repeat(40), root), /valid semantic version/);
+  });
+});
+
+test('release detection emits validated GitHub job outputs', async () => {
+  await fixture(async root => {
+    await manifests(root);
+    const output = join(root, 'github-output');
+    execFileSync(process.execPath, [fileURLToPath(new URL('./detect-release.mjs', import.meta.url))], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, BEFORE_SHA: '0'.repeat(40), GITHUB_OUTPUT: output },
+    });
+    assert.equal(await readFile(output, 'utf8'), 'changed=true\ntag=v1.2.3\nversion=1.2.3\nprerelease=false\nnpm_asset=goulin-launchpad-cli-1.2.3.tgz\n');
   });
 });
 

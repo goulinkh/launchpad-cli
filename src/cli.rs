@@ -304,6 +304,27 @@ mod tests {
     }
 
     #[test]
+    fn help_and_argument_errors_use_the_invoked_command_name() {
+        for name in ["launchpad-cli", "lp", "lpcli"] {
+            for (arguments, suffix) in [
+                (vec![name], ""),
+                (vec![name, "--help"], ""),
+                (vec![name, "api"], " api"),
+                (vec![name, "api", "--help"], " api"),
+            ] {
+                let message = command()
+                    .try_get_matches_from(arguments)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    message.contains(&format!("Usage: {name}{suffix} [OPTIONS] <COMMAND>")),
+                    "{message}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn preserves_launchpad_statuses_and_repeated_filters() {
         let parsed = command()
             .try_get_matches_from([

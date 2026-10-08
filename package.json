@@ -14,11 +14,14 @@
   },
   "bin": {
     "launchpad-cli": "npm/cli.mjs",
-    "lp": "npm/cli.mjs",
-    "lpcli": "npm/cli.mjs"
+    "lp": "npm/lp.mjs",
+    "lpcli": "npm/lpcli.mjs"
   },
   "files": [
     "npm/cli.mjs",
+    "npm/lp.mjs",
+    "npm/lpcli.mjs",
+    "npm/launcher.mjs",
     "npm/platform.mjs",
     "bin",
     "NOTICE.md",
@@ -37,7 +40,7 @@
   "scripts": {
     "openapi:fetch": "node scripts/fetch-openapi.mjs",
     "openapi:check": "node scripts/check-openapi.mjs",
-    "check:release": "node --check scripts/release-metadata.mjs && node --check scripts/package-release.mjs && node --check scripts/package-npm.mjs && node --check scripts/release-checksums.mjs && node --check npm/cli.mjs && node --check npm/platform.mjs",
+    "check:release": "node --check scripts/release-metadata.mjs && node --check scripts/detect-release.mjs && node --check scripts/package-release.mjs && node --check scripts/package-npm.mjs && node --check scripts/release-checksums.mjs && node --check npm/cli.mjs && node --check npm/lp.mjs && node --check npm/lpcli.mjs && node --check npm/launcher.mjs && node --check npm/platform.mjs",
     "check": "npm run openapi:check && npm run check:release && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings",
     "test": "node --test scripts/*.test.mjs && cargo test --locked",
     "release:metadata": "node scripts/release-metadata.mjs",
@@ -47,6 +50,7 @@
     "prepack": "node scripts/package-npm.mjs --check"
   },
   "devDependencies": {
-    "@canonical/launchpad-openapi": "0.0.4"
+    "@canonical/launchpad-openapi": "0.0.4",
+    "yaml": "2.9.1"
   }
 }

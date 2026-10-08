@@ -8,7 +8,8 @@ import { binaryName } from '../npm/platform.mjs';
 import { TARGETS, metadataFromFiles, npmAssetName } from './release-metadata.mjs';
 
 const PACKAGE_FILES = [
-  'npm/cli.mjs', 'npm/platform.mjs', 'README.md', 'NOTICE.md', 'LICENSE',
+  'npm/cli.mjs', 'npm/lp.mjs', 'npm/lpcli.mjs', 'npm/launcher.mjs', 'npm/platform.mjs',
+  'README.md', 'NOTICE.md', 'LICENSE',
   'DEVELOPMENT.md', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
   'openapi/CONVERTER-LICENSE', 'openapi/launchpad.json.gz', 'openapi/provenance.json',
 ];
@@ -61,7 +62,7 @@ export async function packageNpm(root = process.cwd()) {
       const destination = join(temporary, file);
       await mkdir(dirname(destination), { recursive: true });
       await copyFile(join(root, file), destination);
-      if (process.platform !== 'win32' && (file === 'npm/cli.mjs' || (file.startsWith('bin/') && !file.endsWith('.exe')))) {
+      if (process.platform !== 'win32' && (Object.values(manifest.bin).includes(file) || (file.startsWith('bin/') && !file.endsWith('.exe')))) {
         await chmod(destination, 0o755);
       }
     }

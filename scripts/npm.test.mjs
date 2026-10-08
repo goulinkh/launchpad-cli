@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -10,13 +10,13 @@ import { checkNpmPackage, packageNpm } from './package-npm.mjs';
 import { TARGETS, npmAssetName } from './release-metadata.mjs';
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'launchpad cli npm test '));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'launchpad cli npm test ')));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of ['bin', 'npm', 'openapi', 'src']) await mkdir(join(root, directory));
   const manifest = { ...JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')), version: '1.2.3' };
   await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
   await writeFile(join(root, 'Cargo.toml'), `[package]\nname = "launchpad-cli"\nversion = "${manifest.version}"\n`);
-  for (const file of ['cli.mjs', 'platform.mjs']) {
+  for (const file of ['cli.mjs', 'lp.mjs', 'lpcli.mjs', 'launcher.mjs', 'platform.mjs']) {
     await copyFile(new URL(`../npm/${file}`, import.meta.url), join(root, 'npm', file));
   }
   for (const file of [
@@ -99,6 +99,33 @@ test('npm packaging enforces the scoped name and rejects runtime dependencies', 
   }
 });
 
+test('npm entry points pass their public command names as native argv0', async t => {
+  const root = await fixture(t);
+  const preload = join(root, 'capture-spawn.mjs');
+  await writeFile(preload, `
+    import childProcess from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    childProcess.spawnSync = (executable, args, options) => {
+      console.log(JSON.stringify({ executable, args, options }));
+      return { status: 0 };
+    };
+    syncBuiltinESMExports();
+  `);
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  for (const [command, entry] of Object.entries(manifest.bin)) {
+    const result = spawnSync(process.execPath, ['--import', preload, join(root, entry), 'api', '--text'], {
+      cwd: tmpdir(), encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.deepEqual(JSON.parse(result.stdout), {
+      executable: join(root, 'bin', binaryName()),
+      args: ['api', '--text'],
+      options: { argv0: command, stdio: 'inherit' },
+    });
+  }
+});
+
 test('npm launcher preserves stdin, stdout, stderr, arguments and exit codes', { skip: process.platform === 'win32' }, async t => {
   const root = await fixture(t);
   await hostBinary(root, `
@@ -107,12 +134,14 @@ test('npm launcher preserves stdin, stdout, stderr, arguments and exit codes', {
     console.error('native diagnostic');
     process.exit(5);
   `);
-  const result = spawnSync(process.execPath, [join(root, 'npm', 'cli.mjs'), 'bug', 'view', 'a;$(not-a-command)', '--json'], {
-    cwd: tmpdir(), encoding: 'utf8', input: '{"target":"1"}',
-  });
-  assert.equal(result.status, 5, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { args: ['bug', 'view', 'a;$(not-a-command)', '--json'], input: '{"target":"1"}' });
-  assert.equal(result.stderr, 'native diagnostic\n');
+  for (const entry of ['cli.mjs', 'lp.mjs', 'lpcli.mjs']) {
+    const result = spawnSync(process.execPath, [join(root, 'npm', entry), 'bug', 'view', 'a;$(not-a-command)', '--json'], {
+      cwd: tmpdir(), encoding: 'utf8', input: '{"target":"1"}',
+    });
+    assert.equal(result.status, 5, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args: ['bug', 'view', 'a;$(not-a-command)', '--json'], input: '{"target":"1"}' });
+    assert.equal(result.stderr, 'native diagnostic\n');
+  }
 });
 
 test('npm launcher reports missing binaries without mixing diagnostics into stdout', async t => {
@@ -143,7 +172,8 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   assert.equal(archive, join(root, 'dist', npmAssetName('1.2.3')));
   const names = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n').sort();
   const expected = [
-    'package/package.json', 'package/npm/cli.mjs', 'package/npm/platform.mjs',
+    'package/package.json', 'package/npm/cli.mjs', 'package/npm/lp.mjs', 'package/npm/lpcli.mjs',
+    'package/npm/launcher.mjs', 'package/npm/platform.mjs',
     'package/README.md', 'package/LICENSE', 'package/NOTICE.md', 'package/DEVELOPMENT.md',
     'package/Cargo.toml', 'package/Cargo.lock', 'package/rust-toolchain.toml', 'package/src/main.rs',
     'package/openapi/CONVERTER-LICENSE', 'package/openapi/launchpad.json.gz', 'package/openapi/provenance.json',
@@ -153,7 +183,7 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   const manifest = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }));
   assert.equal(manifest.name, '@goulin/launchpad-cli');
   assert.equal(manifest.version, '1.2.3');
-  assert.deepEqual(manifest.bin, { 'launchpad-cli': 'npm/cli.mjs', lp: 'npm/cli.mjs', lpcli: 'npm/cli.mjs' });
+  assert.deepEqual(manifest.bin, { 'launchpad-cli': 'npm/cli.mjs', lp: 'npm/lp.mjs', lpcli: 'npm/lpcli.mjs' });
   assert.equal(manifest.publishConfig.access, 'public');
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.devDependencies, undefined);
@@ -162,6 +192,9 @@ test('scoped npm tarball installs offline without scripts or Rust and includes G
   npm(['install', '--prefix', install, '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--package-lock=false', archive], root);
   const packageRoot = join(install, 'node_modules', '@goulin', 'launchpad-cli');
   assert.equal((await lstat(join(packageRoot, 'bin', binaryName()))).mode & 0o111, 0o111);
+  for (const entry of Object.values(manifest.bin)) {
+    assert.equal((await lstat(join(packageRoot, entry))).mode & 0o111, 0o111);
+  }
   await assert.rejects(lstat(join(install, 'node_modules', '.bin', 'lpci')), { code: 'ENOENT' });
   for (const command of ['launchpad-cli', 'lp', 'lpcli']) {
     const launcher = join(install, 'node_modules', '.bin', command);
