@@ -119,8 +119,8 @@ Three workflows are included:
 GitHub publishing uses the workflow's built-in `GITHUB_TOKEN`; no personal access
 token, registry credentials, or extra secrets are required for that workflow.
 Only the publishing job has `contents: write`. Actions are pinned to commit
-SHAs, checkout does not persist
-credentials, and tagged source passes the full test suite before packaging.
+SHAs, checkout does not persist credentials, and tagged source passes the full
+test suite before packaging.
 Keep GitHub Actions enabled and ensure repository or organisation policies allow
 these pinned actions and the publishing job's write permission.
 
@@ -149,11 +149,11 @@ To publish the current version after committing the source:
 ```sh
 npm run check
 npm test
-node scripts/release-metadata.mjs v0.1.0
+node scripts/release-metadata.mjs v0.1.1
 # No release is created until the tag is pushed:
-git tag -a v0.1.0 -m 'launchpad-cli v0.1.0'
+git tag -a v0.1.1 -m 'launchpad-cli v0.1.1'
 git push origin main
-git push origin v0.1.0
+git push origin v0.1.1
 ```
 
 For later releases, update the `[package]` version in `Cargo.toml` and the
@@ -176,6 +176,8 @@ Packaging must run on the binary's matching OS and architecture so the smoke
 test actually executes it. Native archives go to ignored `dist/`; each verified
 executable is also staged under ignored `bin/` with a platform-specific name.
 The matrix uploads both, and the publishing job combines all six builds.
+Windows ZIP packaging invokes the system's native bsdtar explicitly rather than
+Git Bash's GNU tar, which interprets drive-letter paths as remote hosts.
 
 After collecting the current version's six verified binaries in `bin/`, run:
 
@@ -190,13 +192,16 @@ and packs a temporary allowlisted tree without development dependencies or
 scripts. Corresponding Rust source, lockfile, toolchain and embedded contract
 build inputs are included for GPL compliance while the source repository is
 private; npm installation never compiles them. The source checkout's `prepack`
-guard also refuses incomplete binary
-sets, preventing an accidental source-only publication. Tests install a fixture
+guard also refuses incomplete binary sets, preventing an accidental source-only
+publication. Tests install a fixture
 tarball offline with lifecycle scripts disabled and exercise the launcher.
 No Rust compilation, Cargo fallback, install-time download, or Launchpad access
 is used by npm consumers.
 
 ### First npm publication
+
+The `v0.1.0` build failed at Windows ZIP packaging before publishing any release.
+That tag is retained unchanged; the corrected first-release candidate is `v0.1.1`.
 
 The npm scope is independent of GitHub. You must control the npm account or
 organisation **`goulinkh`**, and the logged-in npm user must have publish rights
@@ -208,12 +213,12 @@ After committing and tagging the source as above, wait for the release workflow
 to finish. Download its already-built npm tarball and checksum manifest:
 
 ```sh
-gh release download v0.1.0 --repo goulinkh/launchpad-cli --dir dist \
-  --pattern 'goulinkh-launchpad-cli-0.1.0.tgz' --pattern SHA256SUMS
-(cd dist && grep '  goulinkh-launchpad-cli-0.1.0.tgz$' SHA256SUMS | shasum -a 256 --check)
+gh release download v0.1.1 --repo goulinkh/launchpad-cli --dir dist \
+  --pattern 'goulinkh-launchpad-cli-0.1.1.tgz' --pattern SHA256SUMS
+(cd dist && grep '  goulinkh-launchpad-cli-0.1.1.tgz$' SHA256SUMS | shasum -a 256 --check)
 npm login
 npm whoami
-npm publish ./dist/goulinkh-launchpad-cli-0.1.0.tgz --access public --tag latest
+npm publish ./dist/goulinkh-launchpad-cli-0.1.1.tgz --access public --tag latest
 npm view @goulinkh/launchpad-cli version
 ```
 

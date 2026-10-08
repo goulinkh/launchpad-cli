@@ -1,6 +1,6 @@
 {
   "name": "@goulinkh/launchpad-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone, agent-friendly Rust CLI for Launchpad",
   "type": "module",
   "license": "GPL-3.0-or-later",

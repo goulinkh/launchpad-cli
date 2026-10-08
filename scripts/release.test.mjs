@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { packageRelease } from './package-release.mjs';
+import { archiveInvocation, packageRelease } from './package-release.mjs';
 import { releaseChecksums } from './release-checksums.mjs';
 import { binaryName } from '../npm/platform.mjs';
 import { TARGETS, assetName, metadataFromFiles, npmAssetName, releaseMetadata } from './release-metadata.mjs';
@@ -71,6 +71,17 @@ test('empty archives cannot be published', async () => {
     for (const target of Object.keys(TARGETS)) await writeFile(join(root, assetName('1.2.3', target)), '');
     await writeFile(join(root, npmAssetName('1.2.3')), 'fixture npm package');
     await assert.rejects(releaseChecksums('1.2.3', root), /empty release asset/);
+  });
+});
+
+test('Windows ZIP packaging selects native bsdtar independently of PATH', () => {
+  const archive = 'C:\\build path\\release.zip';
+  const directory = 'C:\\temporary path';
+  assert.deepEqual(archiveInvocation('win32', archive, directory, 'release', 'D:\\Windows'), {
+    program: 'D:\\Windows\\System32\\tar.exe', args: ['-a', '-cf', archive, '-C', directory, 'release'],
+  });
+  assert.deepEqual(archiveInvocation('linux', '/build/release.tar.gz', '/temporary', 'release'), {
+    program: 'tar', args: ['-czf', '/build/release.tar.gz', '-C', '/temporary', 'release'],
   });
 });
 

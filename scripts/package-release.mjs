@@ -1,11 +1,19 @@
 import { execFileSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { binaryName } from '../npm/platform.mjs';
 import { TARGETS, assetName, metadataFromFiles } from './release-metadata.mjs';
+
+export function archiveInvocation(platform, archive, directory, stem, windowsRoot = process.env.SystemRoot ?? 'C:\\Windows') {
+  if (platform === 'win32') {
+    // Git Bash's GNU tar treats drive letters as remote hosts and cannot produce ZIPs.
+    return { program: win32.join(windowsRoot, 'System32', 'tar.exe'), args: ['-a', '-cf', archive, '-C', directory, stem] };
+  }
+  return { program: 'tar', args: ['-czf', archive, '-C', directory, stem] };
+}
 
 export async function packageRelease(target, root = process.cwd()) {
   const platform = TARGETS[target];
@@ -35,12 +43,8 @@ export async function packageRelease(target, root = process.cwd()) {
     for (const file of ['README.md', 'NOTICE.md', 'LICENSE', 'openapi/CONVERTER-LICENSE']) {
       await copyFile(join(root, file), join(contents, file));
     }
-    if (platform.platform === 'win32') {
-      // Windows runners ship bsdtar, whose -a selects ZIP from the output suffix.
-      execFileSync('tar', ['-a', '-cf', archive, '-C', temporary, stem]);
-    } else {
-      execFileSync('tar', ['-czf', archive, '-C', temporary, stem]);
-    }
+    const { program, args } = archiveInvocation(platform.platform, archive, temporary, stem);
+    execFileSync(program, args);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
